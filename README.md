@@ -14,16 +14,18 @@ An NHL game-betting research aid. Built for traditional bets on Bet365 and simil
   - full breakdown: side-by-side stats, every model line, goalies, hot players, season series
 - **Check a Bet365 price:** pick a market, type the price Bet365 shows, and get the model's chance, what the price implies, and expected return per $100 (VALUE / FAIR / PASS).
 - **Head-to-head:** any two teams in seconds, scheduled or not, with a neutral-site option.
+- **Research:** a 5-season study (6,533 games) of whether home ice, road form and scoring style predict results. Short version: home ice is worth about 3–4 points, team home/road records don't persist, goal differential is the best guide, and scoring style doesn't decide winners or move totals much.
+- **Bet log:** tap "+ Log bet" on any angle (or add one by hand), mark W/L/P, and see record, profit and return. Stored on the device you use; export to CSV.
 - **Teams:** sortable table of home vs road form, road-minus-home gap (road warriors), goal ratio, last 10, special teams, save %, over/OT rates.
 
 ## What it looks at
 
 | Factor | Where it shows up |
 |---|---|
-| Home-ice advantage | Home team's home points % vs away team's road points %; venue-specific scoring in the model |
-| Teams better on the road | "Road warriors" reason; *Road − Home* column in Teams |
-| Goal ratios | Goals for ÷ goals against, plus GF/GA per game |
-| Recent form | Last 10 and last 5 results, streak |
+| Home-ice advantage | League-wide home edge built into the model; team home/road records shown but marked weak (see Research) |
+| Teams better on the road | *Road − Home* column in Teams; marked weak signal (doesn't persist) |
+| Goal ratios / differential | The model's main input: 80% of each rating is full-season goals for and against |
+| Recent form | Last 10 and last 5 results, streak (10% weight; weak signal) |
 | Rest | Back-to-back flag, about −5% in the model |
 | Special teams | Power play vs opponent's penalty kill |
 | Goaltending | Team save %, each goalie's season line |
@@ -57,6 +59,7 @@ Then open http://localhost:8000.
 - `scripts/fetch_data.py` pulls standings, splits, special teams, schedules, goalies and odds from the NHL's public API into `docs/data/latest.json` (standard library only, no keys).
 - `docs/model.js` holds the rating model, score grid, market comparison and reason/angle finder. Tuning constants are at the top.
 - `docs/app.js`, `docs/index.html` and `docs/style.css` are the website.
+- `scripts/fetch_history.py` and `scripts/research.py` rebuild the 5-season study (`data/history.json`, `data/research.json`).
 - `.github/workflows/refresh.yml` runs the hourly refresh and publish.
 
 ---

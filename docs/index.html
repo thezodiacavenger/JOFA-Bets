@@ -31,6 +31,8 @@
     <button role="tab" data-tab="slate" aria-selected="true">Slate</button>
     <button role="tab" data-tab="matchup">Head-to-head</button>
     <button role="tab" data-tab="teams">Teams</button>
+    <button role="tab" data-tab="research">Research</button>
+    <button role="tab" data-tab="log">Bet log</button>
     <button role="tab" data-tab="about">How it works</button>
   </nav>
 
@@ -60,15 +62,83 @@
       <div class="table-wrap"><table id="teamTable"></table></div>
     </section>
 
+
+    <section id="tab-research" class="tab prose wide" hidden>
+      <h2>Do home ice, road form or scoring style decide NHL games?</h2>
+      <p class="lede">I tested five full seasons (2021-22 to 2025-26, <b>6,533 games</b>) using only what each team had done <i>before</i> each game, the same information you have when you place a bet. Games before both teams had played 15 are left out, leaving 5,297 for the matchup tests.</p>
+
+      <div class="findings">
+        <div class="finding"><div class="big">53.7%</div><div><b>Home ice is real but small.</b> Home teams win 53.7% of games (52.1% to 56.3% by season) and score 3.23 goals to the visitors' 3.01. In OT and shootouts the edge shrinks to 52.4%.</div></div>
+        <div class="finding"><div class="big">0.04</div><div><b>"Good at home" and "road warrior" records don't last.</b> Across 160 team-seasons, how much better a team did at home than on the road in the first half had almost no link (correlation 0.04, where 1 is perfect and 0 is none) to the second half. A team's home and road records only track its overall quality.</div></div>
+        <div class="finding"><div class="big">GD</div><div><b>Goal differential is the best guide.</b> Season goals-for minus goals-against per game picked the winner as well as the standings, with slightly better-calibrated odds. Once you know it, adding points %, home/road splits, last-10 form or scoring style didn't measurably improve predictions.</div></div>
+        <div class="finding"><div class="big">≈50/50</div><div><b>Scoring style doesn't decide winners.</b> When two teams have similar goal differentials, the high-scoring "wild" team (lots of goals both ways) beat the low-scoring "tight" team 52% of the time, which is a coin flip (288 games). Whether a style clash helps the home team flipped direction from season to season.</div></div>
+      </div>
+
+      <h3>High-scoring vs low-scoring teams, home and away</h3>
+      <p>Home team's win % (and average total goals) by how much each team scores, split into thirds of the league at the time of the game:</p>
+      <div class="table-wrap"><table class="heat">
+        <thead><tr><th>Home team ↓ / Away team →</th><th>Low-scoring away</th><th>Mid away</th><th>High-scoring away</th></tr></thead>
+        <tbody>
+          <tr><th>Low-scoring home</th><td style="--h:.54">54% <span>6.22 goals</span></td><td style="--h:.47">47% <span>6.12</span></td><td style="--h:.39">39% <span>6.33</span></td></tr>
+          <tr><th>Mid home</th><td style="--h:.63">63% <span>6.14</span></td><td style="--h:.49">49% <span>6.21</span></td><td style="--h:.52">52% <span>6.31</span></td></tr>
+          <tr><th>High-scoring home</th><td style="--h:.68">68% <span>6.25</span></td><td style="--h:.61">61% <span>6.23</span></td><td style="--h:.51">51% <span>6.38</span></td></tr>
+        </tbody></table></div>
+      <p class="small">About 580 games per cell, so each figure is accurate to roughly ±4 points.</p>
+      <ul>
+        <li><b>High-scoring teams beat low-scoring teams 68% of the time at home and 61% on the road.</b> Home ice is worth about 3–4 points either way. That is mostly because high-scoring teams are usually better teams. Compare teams with the same goal differential and the gap disappears.</li>
+        <li><b>Defence-first vs offence-first at the same goal differential:</b> the offence-first team won 54% (112 games, ±9). That's not enough to bet on.</li>
+        <li><b>Totals barely move.</b> Every cell averages 6.1–6.4 goals. Even when two high-scoring teams meet, the game averages only 6.38 goals against a league average of 6.24.</li>
+      </ul>
+
+      <h3>Over/under: who sets the pace?</h3>
+      <ul>
+        <li>Game totals move only about <b>three-quarters</b> as much as the two teams' scoring averages suggest. Extreme teams drift back toward league average.</li>
+        <li>When a tight team meets a wild team (1,198 games), the tight team does <b>not</b> slow the game down: totals averaged 6.31 and went over 6.5 46.5% of the time, the same as the league (46.1%). If anything, the higher-scoring team pulls the total up slightly more.</li>
+      </ul>
+
+      <h3>Standings vs goal differential</h3>
+      <p>When the standings and goal differential disagree about which team is better, the team with the better goal differential won 56% (61% when it was at home). That supports the "standings can flatter a team" idea, but there were only 55 such games, so treat it as a lean, not proof.</p>
+
+      <h3>What changed in the app because of this</h3>
+      <ul>
+        <li>Model weights: full-season goals <b>80%</b> (was 45%), home/road split <b>10%</b> (was 35%), last 10 <b>10%</b> (was 20%). League-wide home ice stays built in.</li>
+        <li>New reasons: <b>Goal-differential gap</b> and <b>Standings flatter the other side</b>.</li>
+        <li>Home/road records, road warriors, last-10 form and the season series are still shown in each game's breakdown but marked <span class="weak">weak signal</span>, and they no longer back an angle.</li>
+      </ul>
+
+      <h3>How to use this at Bet365</h3>
+      <ol>
+        <li><b>Judge teams by goal differential per game</b>, not the standings or their home/road record. The Teams tab sorts by goal ratio.</li>
+        <li><b>Be wary of "they're great on the road" stories.</b> They don't persist. If a price seems to lean on one, the other side may be the value. That's a hypothesis, not tested, because there's no free historical odds data.</li>
+        <li><b>Be choosy with totals.</b> Team styles barely move them, so lines near 6.5 are usually close to fair. Look for a goalie change or a back-to-back instead.</li>
+      </ol>
+      <p class="fine">What this can't tell you: whether these patterns beat the bookmakers' prices. That needs historical odds, which aren't freely available. The tests show what predicts winners, and the books know most of it too. Re-run with <code>python3 scripts/fetch_history.py</code> then <code>python3 scripts/research.py</code>.</p>
+    </section>
+
+    <section id="tab-log" class="tab" hidden>
+      <p class="hint">Saved on this device only (phone and computer keep separate logs). Tap "+ Log bet" on any angle, or add one here. Use Export to keep a copy.</p>
+      <form id="logAdd" class="toolbar log-form">
+        <input name="game" type="text" placeholder="Game (e.g. EDM @ TOR)" aria-label="Game">
+        <select name="market" aria-label="Market"><option>Moneyline</option><option>Puck line</option><option>Total</option><option>Prop</option></select>
+        <input name="pick" type="text" placeholder="Bet (e.g. EDM ML)" aria-label="Bet" required>
+        <input name="odds" type="text" placeholder="Odds" size="6" aria-label="Odds">
+        <input name="stake" type="text" placeholder="Stake" size="5" inputmode="decimal" aria-label="Stake">
+        <button class="ghost" type="submit">Add</button>
+        <button class="ghost" type="button" id="logExport">Export CSV</button>
+      </form>
+      <div id="logSummary" class="kpis log-kpis"></div>
+      <div class="table-wrap"><table id="logTable" class="log-table"></table></div>
+    </section>
+
     <section id="tab-about" class="tab prose" hidden>
       <h2>How the numbers are built</h2>
       <p>Data refreshes automatically from the NHL's official stats feed several times a day. Nothing here needs an account or a key.</p>
       <ol>
-        <li><b>Team ratings.</b> Each team gets an attack and a defence rating against league average, blended from its <b>home or road split (35%)</b>, <b>full season (45%)</b> and <b>last 10 games (20%)</b>. Small samples are pulled toward league average so a three-game hot streak doesn't take over.</li>
+        <li><b>Team ratings.</b> Each team gets an attack and a defence rating against league average, blended from its <b>full season goals for and against (80%)</b>, <b>home or road split (10%)</b> and <b>last 10 games (10%)</b>. Those weights come from the 5-season study on the Research tab. Small samples are pulled toward league average so a three-game hot streak doesn't take over.</li>
         <li><b>Expected goals.</b> League scoring at that venue × attack × the opponent's defence. Teams on the second night of a <b>back-to-back</b> lose about 5%.</li>
         <li><b>Score grid.</b> Those expected goals feed a score-probability grid, tuned to this season's real tie rate (games to OT) and empty-net goals. That produces win %, puck line %, totals and game props.</li>
         <li><b>Market check.</b> Moneylines from several books (FanDuel, DraftKings and others in the NHL feed) are averaged with the bookmaker margin removed. When the model is 3+ points higher than the market <i>and</i> the stats give a reason, it's flagged as an angle.</li>
-        <li><b>Reasons.</b> Each game is scanned for mismatches: home-ice vs road form, road warriors, goal-ratio gaps, last-10 form, rest, power play vs penalty kill, goaltending and the season series. The strongest one or two are shown with each angle.</li>
+        <li><b>Reasons.</b> Each game is scanned for mismatches: goal-differential gaps, standings that flatter a team, rest, power play vs penalty kill, goaltending, and expected goals. Home/road records, last-10 form and the season series are still listed in the breakdown but marked <i>weak signal</i>, because history shows they don't predict results, so they never back an angle.</li>
       </ol>
       <h2>Using it with Bet365</h2>
       <p>Bet365 doesn't publish a free odds feed, so open any game, pick the market in <b>Check a Bet365 price</b> and type the price you see. The tool tells you the model's chance, what the price implies, and the expected return per $100. <b>Fair odds</b> on every card are the break-even price: if Bet365 pays better than that, the model sees value.</p>

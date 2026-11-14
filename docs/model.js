@@ -2,7 +2,8 @@
  *
  * How it works (plain English):
  *  1. Each team gets an attack and defence rating relative to league average,
- *     built from: its home-or-road split (35%), full season (45%), last 10 (20%).
+ *     built mostly from full-season goals for/against (80%), with a little from
+ *     its home-or-road split (10%) and last 10 games (10%).
  *     Small samples are pulled toward league average so 3 hot games don't dominate.
  *  2. Expected goals for each side = league average at that venue x attack x
  *     opponent's defence, with a penalty for teams on a back-to-back.
@@ -14,7 +15,9 @@
 (function (global) {
   "use strict";
 
-  const W_SPLIT = 0.35, W_SEASON = 0.45, W_L10 = 0.2;
+  // Weights set from 5 seasons of history (scripts/research.py): team-specific home/road
+  // splits and last-10 form add almost nothing once full-season goals are known.
+  const W_SPLIT = 0.1, W_SEASON = 0.8, W_L10 = 0.1;
   const SHRINK_GAMES = 6;      // games of league-average "prior" mixed in
   const SHRINK_SPLIT = 10;     // home/road splits are noisier, so pull them harder
   const B2B_ATTACK = 0.95;     // back-to-back team scores ~5% less
@@ -245,7 +248,8 @@
   function findReasons(c) {
     const { H, A, L, fH, fA, restH, restA, h2h, p, neutral } = c;
     const R = [];
-    const add = (side, score, title, text) => R.push({ side, score, title, text });
+    // weak = shown for context, but history says it doesn't predict results, so it never backs an angle
+    const add = (side, score, title, text, weak = false) => R.push({ side, score: weak ? score * 0.3 : score, title, text, weak });
     const nm = (t) => t.common || t.abbrev;
 
     // Home ice vs road form
@@ -254,26 +258,34 @@
       const gap = hHome - aRoad;
       if (gap >= 0.15)
         add("home", gap, "Home-ice edge",
-          `${nm(H)} earn ${pct(hHome)} of points at home; ${nm(A)} only ${pct(aRoad)} on the road.`);
+          `${nm(H)} earn ${pct(hHome)} of points at home; ${nm(A)} only ${pct(aRoad)} on the road.`, true);
       if (gap <= -0.12)
         add("away", -gap, "Road team travels well",
-          `${nm(A)} earn ${pct(aRoad)} of points on the road vs ${nm(H)}'s ${pct(hHome)} at home.`);
+          `${nm(A)} earn ${pct(aRoad)} of points on the road vs ${nm(H)}'s ${pct(hHome)} at home.`, true);
     }
     // Road warriors / home-weak
     if (A.road.gp >= 4 && aRoad >= 0.65 && aRoad > ptsPct(A.home) + 0.05)
       add("away", aRoad - 0.5, "Road warriors",
-        `${nm(A)} are ${A.road.w}-${A.road.l}-${A.road.otl} away from home — better than at home (${pct(ptsPct(A.home))}).`);
+        `${nm(A)} are ${A.road.w}-${A.road.l}-${A.road.otl} away from home — better than at home (${pct(ptsPct(A.home))}).`, true);
     if (!neutral && H.home.gp >= 4 && hHome <= 0.4)
       add("away", 0.5 - hHome, "Weak at home",
-        `${nm(H)} are just ${H.home.w}-${H.home.l}-${H.home.otl} at home (${pct(hHome)} of points).`);
+        `${nm(H)} are just ${H.home.w}-${H.home.l}-${H.home.otl} at home (${pct(hHome)} of points).`, true);
 
-    // Goal ratio
-    const ratio = (t) => t.gf / Math.max(t.ga, 1);
-    const rH = ratio(H), rA = ratio(A);
-    if (Math.abs(rH - rA) >= 0.25) {
-      const better = rH > rA ? H : A, worse = rH > rA ? A : H;
-      add(rH > rA ? "home" : "away", Math.abs(rH - rA) / 2, "Goal-ratio gap",
-        `${nm(better)} score ${ratio(better).toFixed(2)} goals for every 1 allowed vs ${ratio(worse).toFixed(2)} for ${nm(worse)}.`);
+    // Goal differential per game: the best single predictor in 5 seasons of history
+    const gd = (t) => (t.gf - t.ga) / Math.max(t.gp, 1);
+    const sgn = (x) => (x >= 0 ? "+" : "") + x.toFixed(2);
+    const dGD = gd(H) - gd(A);
+    if (Math.abs(dGD) >= 0.4) {
+      const better = dGD > 0 ? H : A, worse = dGD > 0 ? A : H;
+      add(dGD > 0 ? "home" : "away", Math.abs(dGD) / 2, "Goal-differential gap",
+        `${nm(better)} are ${sgn(gd(better))} goals per game (${better.gf} for, ${better.ga} against); ${nm(worse)} are ${sgn(gd(worse))}.`);
+    }
+    // Standings flatter one team: goal differential disagrees with points %
+    const dPts = H.ptsPct - A.ptsPct;
+    if (dPts * dGD < 0 && Math.abs(dPts) >= 0.05 && Math.abs(dGD) >= 0.2) {
+      const real = dGD > 0 ? H : A, flat = dGD > 0 ? A : H;
+      add(dGD > 0 ? "home" : "away", 0.2, "Standings flatter the other side",
+        `${nm(flat)} have more points (${pct(flat.ptsPct)} vs ${pct(real.ptsPct)}) but a worse goal differential. Goal differential is the better guide.`);
     }
 
     // Recent form
@@ -282,7 +294,7 @@
     if (Math.abs(dForm) >= 5) {
       const hot = dForm > 0 ? H : A, cold = dForm > 0 ? A : H;
       add(dForm > 0 ? "home" : "away", Math.abs(dForm) / 20, "Form gap (last 10)",
-        `${nm(hot)} are ${l10(hot)} in their last 10; ${nm(cold)} are ${l10(cold)}.`);
+        `${nm(hot)} are ${l10(hot)} in their last 10; ${nm(cold)} are ${l10(cold)}.`, true);
     }
 
     // Rest
@@ -313,7 +325,7 @@
       const hw = h2h.filter((g) => g.gf > g.ga).length;
       if (hw === h2h.length || hw === 0)
         add(hw ? "home" : "away", 0.15, "Season series",
-          `${hw ? nm(H) : nm(A)} have won all ${h2h.length} meetings this season.`);
+          `${hw ? nm(H) : nm(A)} have won all ${h2h.length} meetings this season.`, true);
     }
 
     // Totals
@@ -333,7 +345,7 @@
   function findAngles(c) {
     const { H, A, p, mkt, reasons, fH, fA } = c;
     const ideas = [];
-    const supporting = (side) => reasons.filter((r) => r.side === side).slice(0, 2);
+    const supporting = (side) => reasons.filter((r) => r.side === side && !r.weak).slice(0, 2);
     const nm = (t) => t.abbrev;
 
     // Moneyline: compare to market if we have it

@@ -46,6 +46,7 @@
     renderSlate();
     setupMatchup();
     renderTeams();
+    BetLog.init();
   }
 
   // ---------- tabs ----------
@@ -135,7 +136,7 @@
 
     const angles = c.angles.slice(0, 2);
     const anglesHtml = angles.length
-      ? `<div class="angles">${angles.map(angleHtml).join("")}</div>`
+      ? `<div class="angles">${angles.map((a) => angleHtml(a, c, g)).join("")}</div>`
       : `<div class="noangle">No clear edge. The numbers and the price roughly agree — a pass is a fine bet.</div>`;
 
     return `<article class="card">
@@ -148,14 +149,17 @@
     </article>`;
   }
 
-  function angleHtml(a) {
+  function angleHtml(a, c, g) {
+    const logData = esc(JSON.stringify({ date: g ? g.date : new Date().toLocaleDateString("en-CA"),
+      game: `${c.A.abbrev} @ ${c.H.abbrev}`, market: a.market, pick: a.pick, model: +a.model.toFixed(3),
+      odds: a.best ? a.best.price : "" }));
     const nums = [`Model ${pct(a.model)}`, `Fair ${fair(a.model)}`];
     if (a.marketP != null) nums.push(`Market ${pct(a.marketP)}`);
     if (a.best) nums.push(`Best ${price(a.best.price)} at ${esc(a.best.book)}`);
     if (a.ev != null) nums.push(`EV ${a.ev >= 0 ? "+" : ""}$${(a.ev * 100).toFixed(0)} per $100`);
     return `<div class="angle">
       <div class="row"><span class="mk">${esc(a.market)}</span><span class="pick">${esc(a.pick)}</span>
-      <span class="num">${nums.join(" · ")}</span></div>
+      <span class="num">${nums.join(" · ")}</span><button class="ghost log-btn" type="button" data-log="${logData}">+ Log bet</button></div>
       <ul>${a.why.map((r) => `<li><b>${esc(r.title)}:</b> ${esc(r.text)}</li>`).join("")}</ul>
       ${a.caution ? `<p class="caution">Big gap vs the market (${((a.model - a.marketP) * 100).toFixed(0)} pts). Books are usually right about something: check goalie and injury news before betting.</p>` : ""}
     </div>`;
@@ -206,7 +210,7 @@
     </tbody></table>`;
 
     const reasons = c.reasons.length
-      ? `<ul class="reasons-all">${c.reasons.map((r) => `<li>${sideLabel(r.side, c)} <b>${esc(r.title)}:</b> ${esc(r.text)}</li>`).join("")}</ul>`
+      ? `<ul class="reasons-all">${c.reasons.map((r) => `<li>${sideLabel(r.side, c)} <b>${esc(r.title)}:</b> ${esc(r.text)}${r.weak ? ` <span class="weak">weak signal</span>` : ""}</li>`).join("")}</ul>`
       : `<p class="small">No strong stat mismatches.</p>`;
 
     const h2h = c.h2h.length
@@ -354,6 +358,87 @@
     });
     draw();
   }
+
+  // ---------- bet log (stored on this device only) ----------
+  const BetLog = {
+    key: "betlog",
+    all() { try { return JSON.parse(store.get(this.key, "[]")) || []; } catch { return []; } },
+    save(list) { store.set(this.key, JSON.stringify(list)); this.render(); },
+    add(b) {
+      const list = this.all();
+      list.unshift({ id: Date.now() + Math.random(), stake: 10, result: "", ...b });
+      this.save(list);
+    },
+    init() {
+      document.addEventListener("click", (e) => {
+        const btn = e.target.closest(".log-btn");
+        if (!btn) return;
+        this.add(JSON.parse(btn.dataset.log));
+        btn.textContent = "✓ Logged"; btn.disabled = true;
+      });
+      $("#logAdd").addEventListener("submit", (e) => {
+        e.preventDefault();
+        const f = e.target;
+        if (!f.pick.value.trim()) return;
+        this.add({ date: new Date().toLocaleDateString("en-CA"), game: f.game.value.trim(), market: f.market.value,
+                   pick: f.pick.value.trim(), odds: f.odds.value.trim(), stake: parseFloat(f.stake.value) || 10 });
+        f.reset();
+      });
+      $("#logTable").addEventListener("change", (e) => {
+        const tr = e.target.closest("tr[data-id]"); if (!tr) return;
+        const list = this.all(); const b = list.find((x) => String(x.id) === tr.dataset.id); if (!b) return;
+        b[e.target.name] = e.target.name === "stake" ? parseFloat(e.target.value) || 0 : e.target.value;
+        this.save(list);
+      });
+      $("#logTable").addEventListener("click", (e) => {
+        const del = e.target.closest(".del"); if (!del) return;
+        const id = del.closest("tr").dataset.id;
+        if (confirm("Delete this bet?")) this.save(this.all().filter((x) => String(x.id) !== id));
+      });
+      $("#logExport").addEventListener("click", () => {
+        const rows = [["date", "game", "market", "pick", "odds", "stake", "result", "profit"],
+          ...this.all().map((b) => [b.date, b.game, b.market, b.pick, b.odds, b.stake, b.result, this.profit(b).toFixed(2)])];
+        const csv = rows.map((r) => r.map((x) => `"${String(x ?? "").replace(/"/g, '""')}"`).join(",")).join("\n");
+        const a = document.createElement("a");
+        a.href = URL.createObjectURL(new Blob([csv], { type: "text/csv" }));
+        a.download = "jofa-bet-log.csv"; a.click();
+      });
+      this.render();
+    },
+    profit(b) {
+      const d = M.toDecimal(b.odds);
+      if (b.result === "W") return d ? b.stake * (d - 1) : 0;
+      if (b.result === "L") return -b.stake;
+      return 0;
+    },
+    render() {
+      const list = this.all();
+      const done = list.filter((b) => b.result === "W" || b.result === "L" || b.result === "P");
+      const w = done.filter((b) => b.result === "W").length, l = done.filter((b) => b.result === "L").length, pu = done.filter((b) => b.result === "P").length;
+      const staked = done.reduce((s, b) => s + (b.result === "P" ? 0 : b.stake), 0);
+      const profit = done.reduce((s, b) => s + this.profit(b), 0);
+      const byMarket = {};
+      for (const b of done) { const m = (byMarket[b.market] ||= { w: 0, l: 0, p: 0 }); m[b.result === "W" ? "w" : b.result === "L" ? "l" : "p"]++; }
+      const money = (x) => (x < 0 ? "−$" : "$") + Math.abs(x).toFixed(2);
+      $("#logSummary").innerHTML = `
+        <div class="kpi"><div class="l">Record</div><div class="v">${w}-${l}${pu ? "-" + pu : ""}</div></div>
+        <div class="kpi"><div class="l">Win rate</div><div class="v">${w + l ? pct(w / (w + l)) : "–"}</div></div>
+        <div class="kpi"><div class="l">Profit</div><div class="v ${profit >= 0 ? "pos" : "neg"}">${money(profit)}</div></div>
+        <div class="kpi"><div class="l">Return on stake</div><div class="v">${staked ? pct(profit / staked, 1) : "–"}</div></div>
+        <div class="kpi"><div class="l">Pending</div><div class="v">${list.length - done.length}</div></div>
+        ${Object.entries(byMarket).map(([m, r]) => `<div class="kpi"><div class="l">${esc(m)}</div><div class="v">${r.w}-${r.l}${r.p ? "-" + r.p : ""}</div></div>`).join("")}`;
+      const opt = (v, cur) => `<option value="${v}" ${v === cur ? "selected" : ""}>${v || "Pending"}</option>`;
+      $("#logTable").innerHTML = list.length ? `<thead><tr><th>Date</th><th>Game</th><th>Bet</th><th>Odds</th><th>Stake</th><th>Result</th><th>Profit</th><th></th></tr></thead><tbody>${
+        list.map((b) => `<tr data-id="${b.id}"><td>${esc(b.date)}</td><td>${esc(b.game)}</td>
+          <td><span class="small">${esc(b.market)}</span><br><b>${esc(b.pick)}</b></td>
+          <td><input name="odds" value="${esc(b.odds)}" size="6" aria-label="Odds"></td>
+          <td><input name="stake" value="${esc(b.stake)}" size="5" inputmode="decimal" aria-label="Stake"></td>
+          <td><select name="result" aria-label="Result">${["", "W", "L", "P"].map((v) => opt(v, b.result)).join("")}</select></td>
+          <td class="${this.profit(b) > 0 ? "pos" : this.profit(b) < 0 ? "neg" : ""}">${b.result ? money(this.profit(b)) : ""}</td>
+          <td><button class="ghost del" type="button" aria-label="Delete">✕</button></td></tr>`).join("")}</tbody>`
+        : `<tbody><tr><td class="small" style="padding:16px">No bets logged yet. Tap "+ Log bet" on any angle, or add one above.</td></tr></tbody>`;
+    },
+  };
 
   load();
 })();
