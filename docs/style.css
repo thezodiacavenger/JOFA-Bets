@@ -243,3 +243,5 @@ code { background: var(--panel-2); padding: 1px 5px; border-radius: 4px; font-si
 .pleg { font-size: .85rem; }
 .pleg[aria-pressed="true"] .small { color: #04111d; }
 @media (max-width: 560px) { .pcards { grid-template-columns: 1fr; } .psum b { font-size: 1rem; } }
+.galt { padding: 4px 16px 0; font-size: .85rem; color: var(--muted); }
+.galt b { color: var(--text); }

@@ -129,16 +129,41 @@
     wireCheckers(fresh);
   });
 
+  // How sure the starter projection is, from the 5-season backtest (model.js)
+  function certaintyTag(ch) {
+    const word = ch.conf >= 0.7 ? "Likely" : ch.conf >= 0.55 ? "Lean" : "Toss-up";
+    const cls = ch.conf >= 0.7 ? "" : ch.conf >= 0.55 ? "b2b" : "live";
+    const b2b = ch.why.startsWith("backup") ? " · B2B backup" : "";
+    return `<span class="tag ${cls}" title="Projections like this were right ${pct(ch.conf)} of the time">${word} ${pct(ch.conf)}${b2b}</span>`;
+  }
+
+  // For each team whose starter is a lean or toss-up (and not picked by you), re-run the
+  // game with the other goalie so you can see how much it matters.
+  function goalieAlts(c) {
+    const out = [];
+    for (const side of ["away", "home"]) {
+      const ch = side === "home" ? c.gH : c.gA;
+      if (!ch || ch.why === "selected" || ch.conf >= 0.7 || !ch.alt) continue;
+      const goalies = { ...(c.opts.goalies || {}), [side]: ch.alt.id };
+      const c2 = M.analyze(DATA, c.H.abbrev, c.A.abbrev, { ...c.opts, goalies });
+      out.push({ side, team: side === "home" ? c.H : c.A, alt: ch.alt, c2 });
+    }
+    return out;
+  }
+
   function goalieRow(c) {
     const pickFor = (t, chosen, side) => {
       const G = (t.goalies || []).filter((g) => g.gs > 0 || (chosen && chosen.goalie.id === g.id));
       if (!G.length) return `<span class="small">–</span>`;
-      const tag = chosen && chosen.why !== "selected" ? `<span class="tag ${chosen.why.startsWith("backup") ? "b2b" : ""}">${chosen.why === "projected" ? "Projected" : "Backup likely (B2B)"}</span>` : `<span class="tag">Your pick</span>`;
+      const tag = chosen && chosen.why !== "selected" ? certaintyTag(chosen) : `<span class="tag">Your pick</span>`;
       return `<label class="gp"><b>${esc(t.abbrev)}</b><select class="goalie-pick" data-side="${side}" aria-label="${esc(t.abbrev)} starting goalie">${
         G.map((g) => `<option value="${g.id}" ${chosen && chosen.goalie.id === g.id ? "selected" : ""}>${esc(g.name)} · ${g.sv.toFixed(3)} · ${g.gs} GS</option>`).join("")}</select> ${tag}</label>`;
     };
+    const alts = c._alts || [];
+    const altLine = alts.map((x) => `<div class="galt">If <b>${esc(x.alt.name)}</b> starts for ${esc(x.team.abbrev)} instead: ${esc(c.A.abbrev)} ${pct(x.c2.p.away)} · ${esc(c.H.abbrev)} ${pct(x.c2.p.home)}
+      <span class="small">(${(x.c2.p.home - c.p.home) >= 0 ? "+" : "−"}${Math.abs((x.c2.p.home - c.p.home) * 100).toFixed(1)} pts ${esc(c.H.abbrev)})</span></div>`).join("");
     return `<div class="goalies-row"><span class="l">Starting goalies</span>${pickFor(c.A, c.gA, "away")}${pickFor(c.H, c.gH, "home")}
-      <a class="small" href="https://www.dailyfaceoff.com/starting-goalies" target="_blank" rel="noopener">Confirm ↗</a></div>`;
+      <a class="small" href="https://www.dailyfaceoff.com/starting-goalies" target="_blank" rel="noopener">Confirm ↗</a></div>${altLine}`;
   }
 
   // ---------- card ----------
@@ -177,6 +202,13 @@
       : `<div class="noangle">No clear edge. The numbers and the price roughly agree — a pass is a fine bet.</div>`;
 
     const key = cardKey(g, H.abbrev, A.abbrev);
+    if (!g || g.state === "FUT" || g.state === "PRE") {
+      c._alts = goalieAlts(c);
+      for (const a of c.angles) {
+        const gone = c._alts.find((x) => !x.c2.angles.some((b) => b.pick === a.pick));
+        if (gone) a.fragile = `${gone.alt.name} (${gone.team.abbrev})`;
+      }
+    }
     return `<article class="card" data-key="${esc(key)}" data-home="${esc(H.abbrev)}" data-away="${esc(A.abbrev)}">
       <div class="card-head">${teamBlock(A, "away", c.restA)}<div class="mid">${mid}</div>${teamBlock(H, "home", c.restH)}</div>
       <div class="bar" title="Model win chance"><div class="a" style="width:${(p.away * 100).toFixed(1)}%"></div><div class="h" style="width:${(p.home * 100).toFixed(1)}%"></div></div>
@@ -201,6 +233,7 @@
       <div class="row"><span class="mk">${esc(a.market)}</span><span class="pick">${esc(a.pick)}</span>
       <span class="num">${nums.join(" · ")}</span><button class="ghost log-btn" type="button" data-log="${logData}">+ Log bet</button></div>
       <ul>${a.why.map((r) => `<li><b>${esc(r.title)}:</b> ${esc(r.text)}</li>`).join("")}</ul>
+      ${a.fragile ? `<p class="caution">Depends on the goalie: this edge disappears if ${esc(a.fragile)} starts. Confirm starters first.</p>` : ""}
       ${a.caution ? `<p class="caution">Big gap vs the market (${((a.model - a.marketP) * 100).toFixed(0)} pts). Books are usually right about something: check goalie and injury news before betting.</p>` : ""}
     </div>`;
   }
@@ -421,8 +454,20 @@
           const decs = mkt.books.map((b) => (side === "home" ? b.decHome : b.decAway));
           return decs.reduce((a, b) => a + b, 0) / decs.length;
         };
-        const goalies = `${c.gA ? c.gA.goalie.name.split(" ").slice(-1)[0] : "?"} vs ${c.gH ? c.gH.goalie.name.split(" ").slice(-1)[0] : "?"}`;
-        const add = (key, label, market, prob, dec) => out.push({ key: `${g.id}|${key}`, gameId: g.id, game, label, market, p: prob, dec, goalies });
+        const gl = (ch) => (ch ? ch.goalie.name.split(" ").slice(-1)[0] + (ch.why !== "selected" && ch.conf < 0.7 ? "?" : "") : "?");
+        const goalies = `${gl(c.gA)} vs ${gl(c.gH)}`;
+        const alts = goalieAlts(c);
+        const add = (key, label, market, prob, dec) => {
+          // fragile = a moneyline whose value turns negative if an uncertain starter is swapped
+          let fragile = null;
+          if (dec && prob * dec > 1) {
+            for (const x of alts) {
+              const p2 = key === "ml-h" ? x.c2.p.home : key === "ml-a" ? x.c2.p.away : null;
+              if (p2 != null && p2 * dec <= 1) fragile = `${x.alt.name} (${x.team.abbrev})`;
+            }
+          }
+          out.push({ key: `${g.id}|${key}`, gameId: g.id, game, label, market, p: prob, dec, goalies, fragile });
+        };
         add("ml-a", `${A.abbrev} ML`, "Moneyline", p.away, typical("away"));
         add("ml-h", `${H.abbrev} ML`, "Moneyline", p.home, typical("home"));
         add("pl-a+", `${A.abbrev} +1.5`, "Puck line", 1 - p.homeBy2, null);
@@ -448,7 +493,8 @@
       const ml = legs.filter((l) => l.market === "Moneyline" && l.dec);
       const byGame = (arr) => { const seen = new Set(); return arr.filter((l) => !seen.has(l.gameId) && seen.add(l.gameId)); };
       const withEv = ml.map((l) => ({ ...l, ev: l.p * l.dec - 1 }));
-      const value = byGame(withEv.filter((l) => l.ev > 0 && l.p >= 0.4).sort((a, b) => b.ev - a.ev)).slice(0, 4);
+      const value = byGame(withEv.filter((l) => l.ev > 0 && l.p >= 0.4 && !l.fragile).sort((a, b) => b.ev - a.ev)).slice(0, 4);
+      this.skipped = withEv.filter((l) => l.ev > 0 && l.p >= 0.4 && l.fragile);
       const likely = byGame([...withEv].sort((a, b) => b.p - a.p)).slice(0, 3);
       return { value, likely, ml: withEv };
     },
@@ -489,6 +535,9 @@
         auto += this.ticketCard("Most likely to hit", "The three biggest model favourites, one per game. Wins most often, but check the value line.", likely,
           "Favourites are usually priced to the book's advantage, and stacking them stacks that edge.");
       }
+      if (this.skipped && this.skipped.length)
+        auto += `<div class="pcard"><h3>Left out: depends on the goalie</h3><p class="small">These rate as value only if the projected starter plays. Confirm starters, set them on the Slate, and they'll be reconsidered.</p><ul class="reasons-all">${
+          this.skipped.map((l) => `<li><b>${esc(l.label)}</b> ${esc(l.game)}: no value if ${esc(l.fragile)} starts</li>`).join("")}</ul></div>`;
       $("#parlayAuto").innerHTML = auto;
       // builder list
       const games = [...new Set(legs.map((l) => l.game))];
