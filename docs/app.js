@@ -13,6 +13,8 @@
   let DATA = null;
   let fmt = store.get("oddsFmt", "american");
   let activeDate = null;
+  const goalieOverride = {}; // card key -> { home: goalieId, away: goalieId }
+  const cardKey = (g, home, away) => (g ? String(g.id) : `m-${away}-${home}`);
   const darkMode = window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches;
   const logo = (t) => esc(darkMode ? (t.logo || "").replace("_light", "_dark") : t.logo);
 
@@ -96,12 +98,45 @@
     const html = [];
     for (const g of games) {
       if (!DATA.teams[g.home] || !DATA.teams[g.away]) continue;
-      const c = M.analyze(DATA, g.home, g.away, { date: g.date, neutral: g.neutral, game: g });
+      const c = M.analyze(DATA, g.home, g.away, { date: g.date, neutral: g.neutral, game: g, goalies: goalieOverride[cardKey(g)] });
       if (onlyAngles && !c.angles.length) continue;
       html.push(card(c, g));
     }
     $("#slate").innerHTML = html.join("") || `<div class="empty">No games match.</div>`;
     wireCheckers($("#slate"));
+  }
+
+  // Goalie picker: re-run the model for just that game, keeping the breakdown open
+  document.addEventListener("change", (e) => {
+    const sel = e.target.closest(".goalie-pick");
+    if (!sel) return;
+    const art = sel.closest("article.card");
+    const key = art.dataset.key;
+    (goalieOverride[key] ||= {})[sel.dataset.side] = sel.value;
+    const g = DATA.games.find((x) => String(x.id) === key);
+    const home = art.dataset.home, away = art.dataset.away;
+    const opts = g ? { date: g.date, neutral: g.neutral, game: g }
+      : { date: new Date().toLocaleDateString("en-CA"), neutral: $("#mNeutral").checked, noRest: true };
+    const c = M.analyze(DATA, home, away, { ...opts, goalies: goalieOverride[key] });
+    const wasOpen = art.querySelector("details.more")?.open;
+    const tmp = document.createElement("div");
+    tmp.innerHTML = card(c, g);
+    const fresh = tmp.firstElementChild;
+    if (wasOpen) fresh.querySelector("details.more").open = true;
+    art.replaceWith(fresh);
+    wireCheckers(fresh);
+  });
+
+  function goalieRow(c) {
+    const pickFor = (t, chosen, side) => {
+      const G = (t.goalies || []).filter((g) => g.gs > 0 || (chosen && chosen.goalie.id === g.id));
+      if (!G.length) return `<span class="small">–</span>`;
+      const tag = chosen && chosen.why !== "selected" ? `<span class="tag ${chosen.why.startsWith("backup") ? "b2b" : ""}">${chosen.why === "projected" ? "Projected" : "Backup likely (B2B)"}</span>` : `<span class="tag">Your pick</span>`;
+      return `<label class="gp"><b>${esc(t.abbrev)}</b><select class="goalie-pick" data-side="${side}" aria-label="${esc(t.abbrev)} starting goalie">${
+        G.map((g) => `<option value="${g.id}" ${chosen && chosen.goalie.id === g.id ? "selected" : ""}>${esc(g.name)} · ${g.sv.toFixed(3)} · ${g.gs} GS</option>`).join("")}</select> ${tag}</label>`;
+    };
+    return `<div class="goalies-row"><span class="l">Starting goalies</span>${pickFor(c.A, c.gA, "away")}${pickFor(c.H, c.gH, "home")}
+      <a class="small" href="https://www.dailyfaceoff.com/starting-goalies" target="_blank" rel="noopener">Confirm ↗</a></div>`;
   }
 
   // ---------- card ----------
@@ -139,10 +174,12 @@
       ? `<div class="angles">${angles.map((a) => angleHtml(a, c, g)).join("")}</div>`
       : `<div class="noangle">No clear edge. The numbers and the price roughly agree — a pass is a fine bet.</div>`;
 
-    return `<article class="card">
+    const key = cardKey(g, H.abbrev, A.abbrev);
+    return `<article class="card" data-key="${esc(key)}" data-home="${esc(H.abbrev)}" data-away="${esc(A.abbrev)}">
       <div class="card-head">${teamBlock(A, "away", c.restA)}<div class="mid">${mid}</div>${teamBlock(H, "home", c.restH)}</div>
       <div class="bar" title="Model win chance"><div class="a" style="width:${(p.away * 100).toFixed(1)}%"></div><div class="h" style="width:${(p.home * 100).toFixed(1)}%"></div></div>
       <div class="bar-labels"><span><b>${pct(p.away)}</b> ${esc(A.abbrev)}</span><span class="small">model win %</span><span>${esc(H.abbrev)} <b>${pct(p.home)}</b></span></div>
+      ${!g || g.state === "FUT" || g.state === "PRE" ? goalieRow(c) : ""}
       <div class="kpis">${kpis.map(([l, v]) => `<div class="kpi"><div class="l">${l}</div><div class="v">${v}</div></div>`).join("")}</div>
       ${anglesHtml}
       <details class="more"><summary>Full breakdown & price checker</summary>${breakdown(c, g)}</details>
@@ -152,7 +189,8 @@
   function angleHtml(a, c, g) {
     const logData = esc(JSON.stringify({ date: g ? g.date : new Date().toLocaleDateString("en-CA"),
       game: `${c.A.abbrev} @ ${c.H.abbrev}`, market: a.market, pick: a.pick, model: +a.model.toFixed(3),
-      odds: a.best ? a.best.price : "" }));
+      odds: a.best ? a.best.price : "", gameId: g ? g.id : null,
+      side: a.market === "Moneyline" ? a.side : null }));
     const nums = [`Model ${pct(a.model)}`, `Fair ${fair(a.model)}`];
     if (a.marketP != null) nums.push(`Market ${pct(a.marketP)}`);
     if (a.best) nums.push(`Best ${price(a.best.price)} at ${esc(a.best.book)}`);
@@ -299,7 +337,7 @@
     // If this pairing is on the schedule, use the real game (odds, goalies, date).
     const g = DATA.games.find((x) => x.home === home && x.away === away && x.state !== "OFF" && x.state !== "FINAL");
     const today = new Date().toLocaleDateString("en-CA");
-    const c = M.analyze(DATA, home, away, { date: g ? g.date : today, neutral: $("#mNeutral").checked || (g && g.neutral), game: g, noRest: !g });
+    const c = M.analyze(DATA, home, away, { date: g ? g.date : today, neutral: $("#mNeutral").checked || (g && g.neutral), game: g, noRest: !g, goalies: goalieOverride[cardKey(g, home, away)] });
     $("#matchup").innerHTML = (g ? "" : `<p class="hint">Not on the schedule in the next few days, so there's no market price. Use the fair odds and price checker against Bet365.</p>`) + card(c, g);
     const det = $("#matchup details"); if (det) det.open = true;
     wireCheckers($("#matchup"));
@@ -316,6 +354,7 @@
         gfpg: t.gf / t.gp, gapg: t.ga / t.gp, ratio: t.gf / Math.max(t.ga, 1),
         l10: t.l10.pts, pp: t.ppPct, pk: t.pkPct, sv: t.svPct,
         over65: f.over65, winBy2: f.winBy2, ot: f.otRate,
+        xgd: t.xg && t.xg.gp ? (t.xg.xgf - t.xg.xga) / t.xg.gp : null, pdo: t.pdo5 ?? null,
       };
     });
     const cols = [
@@ -323,7 +362,9 @@
       ["home", "Home pts %", "hi", pct], ["road", "Road pts %", "hi", pct],
       ["roadEdge", "Road − Home", "hi", (v) => (v >= 0 ? "+" : "") + (v * 100).toFixed(0)],
       ["gfpg", "GF/G", "hi", (v) => v.toFixed(2)], ["gapg", "GA/G", "lo", (v) => v.toFixed(2)],
-      ["ratio", "Goal ratio", "hi", (v) => v.toFixed(2)], ["l10", "L10 pts", "hi", String],
+      ["ratio", "Goal ratio", "hi", (v) => v.toFixed(2)],
+      ["xgd", "xG diff/G", "hi", (v) => (v == null ? "–" : (v >= 0 ? "+" : "") + v.toFixed(2))],
+      ["pdo", "PDO", null, (v) => (v == null ? "–" : v.toFixed(3))], ["l10", "L10 pts", "hi", String],
       ["pp", "PP %", "hi", (v) => pct(v, 1)], ["pk", "PK %", "hi", (v) => pct(v, 1)],
       ["sv", "Sv %", "hi", (v) => v?.toFixed(3) ?? "–"], ["over65", "Over 6.5", null, pct],
       ["winBy2", "Win by 2+", "hi", pct], ["ot", "To OT", null, pct],
@@ -411,8 +452,26 @@
       if (b.result === "L") return -b.stake;
       return 0;
     },
+    // Closing line value: how the price you took compares with the final pre-game price.
+    // Moneylines logged from the slate use the no-vig consensus close from several books;
+    // anything else uses the "Close" price you type in.
+    clv(b) {
+      const taken = M.toDecimal(b.odds);
+      if (!taken) return null;
+      const snap = b.gameId && DATA && DATA.closing && DATA.closing[String(b.gameId)];
+      if (snap && b.side && !b.close) {
+        const m = M.market(snap);
+        if (m) return { value: (b.side === "home" ? m.pHome : m.pAway) * taken - 1, auto: true,
+                        closeProb: b.side === "home" ? m.pHome : m.pAway };
+      }
+      const close = M.toDecimal(b.close);
+      return close ? { value: taken / close - 1, auto: false } : null;
+    },
     render() {
       const list = this.all();
+      const clvs = list.map((b) => this.clv(b)).filter(Boolean);
+      const avgClv = clvs.length ? clvs.reduce((s, c) => s + c.value, 0) / clvs.length : null;
+      const beat = clvs.filter((c) => c.value > 0).length;
       const done = list.filter((b) => b.result === "W" || b.result === "L" || b.result === "P");
       const w = done.filter((b) => b.result === "W").length, l = done.filter((b) => b.result === "L").length, pu = done.filter((b) => b.result === "P").length;
       const staked = done.reduce((s, b) => s + (b.result === "P" ? 0 : b.stake), 0);
@@ -425,13 +484,17 @@
         <div class="kpi"><div class="l">Win rate</div><div class="v">${w + l ? pct(w / (w + l)) : "–"}</div></div>
         <div class="kpi"><div class="l">Profit</div><div class="v ${profit >= 0 ? "pos" : "neg"}">${money(profit)}</div></div>
         <div class="kpi"><div class="l">Return on stake</div><div class="v">${staked ? pct(profit / staked, 1) : "–"}</div></div>
+        <div class="kpi"><div class="l">Beat the close</div><div class="v">${clvs.length ? `${beat} of ${clvs.length}` : "–"}</div></div>
+        <div class="kpi"><div class="l">Avg closing value</div><div class="v ${avgClv > 0 ? "pos" : avgClv < 0 ? "neg" : ""}">${avgClv == null ? "–" : (avgClv >= 0 ? "+" : "") + (avgClv * 100).toFixed(1) + "%"}</div></div>
         <div class="kpi"><div class="l">Pending</div><div class="v">${list.length - done.length}</div></div>
         ${Object.entries(byMarket).map(([m, r]) => `<div class="kpi"><div class="l">${esc(m)}</div><div class="v">${r.w}-${r.l}${r.p ? "-" + r.p : ""}</div></div>`).join("")}`;
       const opt = (v, cur) => `<option value="${v}" ${v === cur ? "selected" : ""}>${v || "Pending"}</option>`;
-      $("#logTable").innerHTML = list.length ? `<thead><tr><th>Date</th><th>Game</th><th>Bet</th><th>Odds</th><th>Stake</th><th>Result</th><th>Profit</th><th></th></tr></thead><tbody>${
+      $("#logTable").innerHTML = list.length ? `<thead><tr><th>Date</th><th>Game</th><th>Bet</th><th>Odds</th><th>Close</th><th>CLV</th><th>Stake</th><th>Result</th><th>Profit</th><th></th></tr></thead><tbody>${
         list.map((b) => `<tr data-id="${b.id}"><td>${esc(b.date)}</td><td>${esc(b.game)}</td>
           <td><span class="small">${esc(b.market)}</span><br><b>${esc(b.pick)}</b></td>
           <td><input name="odds" value="${esc(b.odds)}" size="6" aria-label="Odds"></td>
+          <td><input name="close" value="${esc(b.close || "")}" size="6" placeholder="${b.gameId && b.side ? "auto" : ""}" aria-label="Closing odds"></td>
+          <td>${(() => { const c = this.clv(b); return c ? `<span class="${c.value > 0 ? "pos" : "neg"}">${c.value >= 0 ? "+" : ""}${(c.value * 100).toFixed(1)}%</span>${c.auto ? ` <span class="small">auto</span>` : ""}` : `<span class="small">${b.gameId && b.side ? "after puck drop" : "–"}</span>`; })()}</td>
           <td><input name="stake" value="${esc(b.stake)}" size="5" inputmode="decimal" aria-label="Stake"></td>
           <td><select name="result" aria-label="Result">${["", "W", "L", "P"].map((v) => opt(v, b.result)).join("")}</select></td>
           <td class="${this.profit(b) > 0 ? "pos" : this.profit(b) < 0 ? "neg" : ""}">${b.result ? money(this.profit(b)) : ""}</td>

@@ -215,3 +215,10 @@ code { background: var(--panel-2); padding: 1px 5px; border-radius: 4px; font-si
 .log-table select { padding: 4px 6px; }
 .pos { color: var(--good); font-weight: 700; }
 .neg { color: var(--bad); font-weight: 700; }
+
+/* goalie picker */
+.goalies-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; padding: 10px 16px 0; font-size: .85rem; }
+.goalies-row .l { color: var(--muted); font-size: .75rem; text-transform: uppercase; letter-spacing: .04em; }
+.goalies-row .gp { display: flex; align-items: center; gap: 6px; }
+.goalies-row select { padding: 4px 8px; font-size: .85rem; max-width: 260px; }
+.prose h2.round { margin-top: 2.6em; padding-top: 1.4em; border-top: 1px solid var(--line); }

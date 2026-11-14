@@ -108,15 +108,36 @@
 
       <h3>How to use this at Bet365</h3>
       <ol>
-        <li><b>Judge teams by goal differential per game</b>, not the standings or their home/road record. The Teams tab sorts by goal ratio.</li>
+        <li><b>Judge teams by goal differential per game</b>, not the standings or their home/road record, and before about game 55 by <b>expected-goal differential</b> (round 2 below). The Teams tab shows both.</li>
         <li><b>Be wary of "they're great on the road" stories.</b> They don't persist. If a price seems to lean on one, the other side may be the value. That's a hypothesis, not tested, because there's no free historical odds data.</li>
         <li><b>Be choosy with totals.</b> Team styles barely move them, so lines near 6.5 are usually close to fair. Look for a goalie change or a back-to-back instead.</li>
       </ol>
-      <p class="fine">What this can't tell you: whether these patterns beat the bookmakers' prices. That needs historical odds, which aren't freely available. The tests show what predicts winners, and the books know most of it too. Re-run with <code>python3 scripts/fetch_history.py</code> then <code>python3 scripts/research.py</code>.</p>
+
+      <h2 class="round">Round 2: what professional bettors use</h2>
+      <p class="lede">Same method, five seasons, adding expected goals (shot quality, from <a href="https://moneypuck.com" target="_blank" rel="noopener">MoneyPuck</a>), luck, last season's ratings, schedule spots and the actual starting goalie for 12,939 team-games.</p>
+      <div class="findings">
+        <div class="finding"><div class="big">59% vs 55%</div><div><b>Shot quality beats goals until about game 55.</b> Between games 15 and 30, expected goals picked the winner 59% of the time; goal differential and the standings managed 55%. By the last third of the season, actual goals catch up and pass it (62% vs 60%).</div></div>
+        <div class="finding"><div class="big">Hot ≠ good</div><div><b>Luck evens out.</b> Teams whose even-strength shooting % + save % (PDO) is well above 1.000 are overrated by their record and goal differential, and cold teams are underrated. This was a reliable effect.</div></div>
+        <div class="finding"><div class="big">~8 games</div><div><b>Last season still matters in November.</b> Between games 11 and 20, last season's goal differential predicted winners better than this season's. With shot quality in the mix it's still worth about 8 games of weight.</div></div>
+        <div class="finding"><div class="big">−7 pts</div><div><b>Back-to-backs are the only schedule spot that holds up.</b> A road team on the second night loses about 8 points of win chance, and a home team about 6.5, even after accounting for the backup goalie. 3-in-4 nights, long road trips, the first game home and crossing time zones showed nothing reliable, and adding them made predictions <i>worse</i> on an unseen season.</div></div>
+        <div class="finding"><div class="big">3–4 pts</div><div><b>The starting goalie matters, but less than line moves suggest.</b> A typical starter-vs-backup gap (about .010 in adjusted save %) is worth roughly 0.3 goals, or 3–4 points of win chance, and about half a goal off the total. Home teams starting a backup won 51.3% vs the 53.1% expected. Books often move 20–40 cents (5–9 points) on goalie news. Whether that over-moves is worth watching, but it's untested.</div></div>
+        <div class="finding"><div class="big">54.7%</div><div><b>Net result on a season the model never saw (2025-26):</b> the new version picked 54.7% of winners vs 53.4% for the round-1 version, with better-calibrated odds. Small but real gains are what to expect: the books know most of this too.</div></div>
+      </div>
+      <h3>What changed in the app (round 2)</h3>
+      <ul>
+        <li><b>Shot quality:</b> each team's full-season rating is now all expected goals early in the season, shifting to 70% actual goals by the last third.</li>
+        <li><b>Last season:</b> counts for about 8 games' worth early on, after being pulled a third of the way back to average.</li>
+        <li><b>Starting goalie picker on every game:</b> projected from recent starts, switching to the other goalie when the usual starter played the night before. Change it once starters are confirmed and every number updates.</li>
+        <li><b>Back-to-back:</b> effect raised from about 5 to about 7 points.</li>
+        <li><b>New reasons:</b> <i>Shot-quality edge</i>, <i>Running hot / Running cold</i>, <i>Goalie matchup</i>.</li>
+        <li><b>Bet log:</b> now tracks <b>closing line value</b> (see the Bet log tab).</li>
+      </ul>
+      <p class="fine">What this can't tell you: whether these patterns beat the bookmakers' prices. That needs historical odds, which aren't freely available. The tests show what predicts winners, and the books know most of it too. Re-run with <code>python3 scripts/fetch_history.py</code>, <code>python3 scripts/fetch_history_extra.py</code>, then <code>python3 scripts/research.py</code> and <code>python3 scripts/research2.py</code>. Expected-goals data: MoneyPuck.com.</p>
     </section>
 
     <section id="tab-log" class="tab" hidden>
       <p class="hint">Saved on this device only (phone and computer keep separate logs). Tap "+ Log bet" on any angle, or add one here. Use Export to keep a copy.</p>
+      <p class="hint"><b>Closing line value (CLV)</b> is how pros grade themselves: did you get a better price than the market's final pre-game price? Beating the close consistently is the best sign of a real edge, and it shows up in 50 bets where wins and losses need hundreds. Moneylines logged from the slate fill in automatically from the books' consensus; for anything else, type the closing price you see at Bet365 just before puck drop.</p>
       <form id="logAdd" class="toolbar log-form">
         <input name="game" type="text" placeholder="Game (e.g. EDM @ TOR)" aria-label="Game">
         <select name="market" aria-label="Market"><option>Moneyline</option><option>Puck line</option><option>Total</option><option>Prop</option></select>
@@ -134,8 +155,8 @@
       <h2>How the numbers are built</h2>
       <p>Data refreshes automatically from the NHL's official stats feed several times a day. Nothing here needs an account or a key.</p>
       <ol>
-        <li><b>Team ratings.</b> Each team gets an attack and a defence rating against league average, blended from its <b>full season goals for and against (80%)</b>, <b>home or road split (10%)</b> and <b>last 10 games (10%)</b>. Those weights come from the 5-season study on the Research tab. Small samples are pulled toward league average so a three-game hot streak doesn't take over.</li>
-        <li><b>Expected goals.</b> League scoring at that venue × attack × the opponent's defence. Teams on the second night of a <b>back-to-back</b> lose about 5%.</li>
+        <li><b>Team ratings.</b> Each team gets an attack and a defence rating against league average, blended from its <b>full season (80%)</b>, <b>home or road split (10%)</b> and <b>last 10 games (10%)</b>. The full-season part mixes <b>expected goals</b> (shot quality, from MoneyPuck) with actual goals, all expected goals early, 70% actual goals late, and leans on <b>last season</b> for the first couple of months. All weights come from the studies on the Research tab. Small samples are pulled toward league average so a three-game hot streak doesn't take over.</li>
+        <li><b>Expected goals.</b> League scoring at that venue × attack × the opponent's defence. Teams on the second night of a <b>back-to-back</b> lose about 7 points of win chance. The <b>starting goalie</b> scales the goals the other side is expected to score, based on his save % (this season plus last, pulled toward average) against the goaltending the team has had so far.</li>
         <li><b>Score grid.</b> Those expected goals feed a score-probability grid, tuned to this season's real tie rate (games to OT) and empty-net goals. That produces win %, puck line %, totals and game props.</li>
         <li><b>Market check.</b> Moneylines from several books (FanDuel, DraftKings and others in the NHL feed) are averaged with the bookmaker margin removed. When the model is 3+ points higher than the market <i>and</i> the stats give a reason, it's flagged as an angle.</li>
         <li><b>Reasons.</b> Each game is scanned for mismatches: goal-differential gaps, standings that flatter a team, rest, power play vs penalty kill, goaltending, and expected goals. Home/road records, last-10 form and the season series are still listed in the breakdown but marked <i>weak signal</i>, because history shows they don't predict results, so they never back an angle.</li>
@@ -144,7 +165,7 @@
       <p>Bet365 doesn't publish a free odds feed, so open any game, pick the market in <b>Check a Bet365 price</b> and type the price you see. The tool tells you the model's chance, what the price implies, and the expected return per $100. <b>Fair odds</b> on every card are the break-even price: if Bet365 pays better than that, the model sees value.</p>
       <h2>Limits worth knowing</h2>
       <ul>
-        <li>Starting goalies aren't confirmed in the feed until close to puck drop. Check the starter before betting; a backup in net can flip a lean.</li>
+        <li>Starting goalies are <b>projected</b>, not confirmed: the NHL feed doesn't name starters in advance. Check the link on each game and change the picker if needed.</li>
         <li>Injuries and line changes aren't modelled.</li>
         <li>Early in the season (under ~15 games) ratings are noisy and lean on league average.</li>
         <li>Player props aren't covered, by design. Game props shown: overtime yes/no and team totals.</li>
@@ -153,7 +174,7 @@
     </section>
   </main>
 
-  <footer class="foot">Stats: NHL public API. For entertainment and research. 19+.</footer>
+  <footer class="foot">Stats: NHL public API. Expected goals: MoneyPuck.com. For entertainment and research. 19+.</footer>
 
   <script src="model.js"></script>
   <script src="app.js"></script>

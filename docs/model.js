@@ -2,11 +2,13 @@
  *
  * How it works (plain English):
  *  1. Each team gets an attack and defence rating relative to league average,
- *     built mostly from full-season goals for/against (80%), with a little from
- *     its home-or-road split (10%) and last 10 games (10%).
- *     Small samples are pulled toward league average so 3 hot games don't dominate.
+ *     built mostly from the full season (80%), with a little from its home-or-road
+ *     split (10%) and last 10 games (10%). The full-season part blends shot
+ *     quality (expected goals) with actual goals: all xG early in the season,
+ *     shifting to 70% goals by the last third. Early on it also leans on last
+ *     season's rating (worth ~8 games), pulled a third of the way to average.
  *  2. Expected goals for each side = league average at that venue x attack x
- *     opponent's defence, with a penalty for teams on a back-to-back.
+ *     opponent's defence, adjusted for the starting goalie and back-to-backs.
  *  3. A Poisson score grid (tuned to real NHL tie and empty-net rates) gives
  *     win %, puck line %, totals % and simple game props.
  *  4. Model % is compared with the bookmakers' prices to find gaps, and the
@@ -20,8 +22,13 @@
   const W_SPLIT = 0.1, W_SEASON = 0.8, W_L10 = 0.1;
   const SHRINK_GAMES = 6;      // games of league-average "prior" mixed in
   const SHRINK_SPLIT = 10;     // home/road splits are noisier, so pull them harder
-  const B2B_ATTACK = 0.95;     // back-to-back team scores ~5% less
-  const B2B_DEFENCE = 1.05;    // ...and allows ~5% more
+  // Round 2 research (scripts/research2.py):
+  const B2B_ATTACK = 0.93;     // back-to-back costs ~7 pts of win chance, beyond the backup goalie
+  const B2B_DEFENCE = 1 / 0.93;
+  const PRIOR_GAMES = 8;       // last season's rating counts as ~8 games early in the year
+  const PRIOR_KEEP = 2 / 3;    // ...after pulling it a third of the way back to average
+  // Actual goals' share of the full-season rating (the rest is expected goals):
+  const goalsWeight = (gp) => Math.min(0.7, Math.max(0, (gp - 25) / 50));
   const TIE_BOOST = 1.6;      // NHL games tie in regulation more than Poisson says
   const EMPTY_NET = 0.28;       // share of 1-goal regulation leads that become 2 (empty net)
   const MAX_GOALS = 11;
@@ -103,6 +110,12 @@
       homeWin: games.filter((g) => g.gf > g.ga).length / n,
       otRate: games.filter((g) => g.end !== "REG").length / n,
       avgTotal: sum(games, (g) => g.gf + g.ga) / n,
+      // expected goals are rescaled so their league total matches actual goals
+      xgScale: (() => { const X = T.filter((t) => t.xg && t.xg.gp);
+        const xg = sum(X, (t) => t.xg.xgf / t.xg.gp * t.gp); return xg ? sum(X, (t) => t.gf) / xg : 1; })(),
+      prevAvg: (() => { const P = T.filter((t) => t.prev); return P.length ? sum(P, (t) => t.prev.gfpg) / P.length : null; })(),
+      prevXgScale: (() => { const P = T.filter((t) => t.prev); const x = sum(P, (t) => t.prev.xgfpg); return x ? sum(P, (t) => t.prev.gfpg) / x : 1; })(),
+      sv: null,
     };
   }
 
@@ -133,6 +146,25 @@
     return { days, b2b: days === 1, prev };
   }
 
+  // Projected starter: whoever has started most of the last 10 games, unless the team
+  // played yesterday and he started that one — then the other regular usually goes.
+  function projectStarter(t, date, b2b) {
+    const G = (t.goalies || []).filter((g) => g.gs > 0);
+    if (!G.length) return null;
+    const main = G[0];
+    if (b2b && main.lastStart && G[1]) {
+      const yesterday = new Date(new Date(date) - 86400000).toISOString().slice(0, 10);
+      if (main.lastStart === yesterday) return { goalie: G[1], why: "backup likely on a back-to-back" };
+    }
+    return { goalie: main, why: "projected" };
+  }
+
+  // Goals-against multiplier vs the goaltending that produced the team's numbers so far
+  function goalieFactor(t, g) {
+    if (!g || !t.goalieMixSv) return 1;
+    return Math.min(1.2, Math.max(0.8, (1 - g.sv) / (1 - t.goalieMixSv)));
+  }
+
   function headToHead(home, away) {
     return home.games.filter((g) => g.opp === away.abbrev);
   }
@@ -142,11 +174,32 @@
     return (goals + k * lgRate) / (gp + k) / lgRate;
   }
 
+  // Full-season goals for/against with expected goals blended in (same units as goals)
+  function seasonTotals(t, L) {
+    if (!t.xg || !t.xg.gp) return { gf: t.gf, ga: t.ga, wGoals: 1 };
+    const w = goalsWeight(t.gp);
+    const xgf = (t.xg.xgf / t.xg.gp) * t.gp * L.xgScale, xga = (t.xg.xga / t.xg.gp) * t.gp * L.xgScale;
+    return { gf: w * t.gf + (1 - w) * xgf, ga: w * t.ga + (1 - w) * xga, wGoals: w };
+  }
+
+  // Season component pulled toward last season's (regressed) rating instead of league average
+  function seasonPart(t, L) {
+    const s = seasonTotals(t, L);
+    if (!t.prev || !L.prevAvg) return [shrunk(s.gf, t.gp, L.all), shrunk(s.ga, t.gp, L.all)];
+    const prevF = 0.7 * t.prev.gfpg + 0.3 * t.prev.xgfpg * L.prevXgScale;
+    const prevA = 0.7 * t.prev.gapg + 0.3 * t.prev.xgapg * L.prevXgScale;
+    const pf = L.all * (1 + (prevF / L.prevAvg - 1) * PRIOR_KEEP);
+    const pa = L.all * (1 + (prevA / L.prevAvg - 1) * PRIOR_KEEP);
+    const k = PRIOR_GAMES;
+    return [(s.gf + k * pf) / (t.gp + k) / L.all, (s.ga + k * pa) / (t.gp + k) / L.all];
+  }
+
   function rating(t, venue, L) {
     const lgFor = venue === "home" ? L.home : venue === "road" ? L.road : L.all;
     const lgAgainst = venue === "home" ? L.road : venue === "road" ? L.home : L.all;
+    const sp = seasonPart(t, L);
     const parts = [
-      [W_SEASON, shrunk(t.gf, t.gp, L.all), shrunk(t.ga, t.gp, L.all)],
+      [W_SEASON, sp[0], sp[1]],
       [W_L10, shrunk(t.l10.gf, t.l10.gp, L.all), shrunk(t.l10.ga, t.l10.gp, L.all)],
     ];
     if (venue !== "neutral") {
@@ -233,12 +286,22 @@
     if (restH.b2b) { lh *= B2B_ATTACK; la *= B2B_DEFENCE; }
     if (restA.b2b) { la *= B2B_ATTACK; lh *= B2B_DEFENCE; }
 
+    // Starting goalies: chosen by the user, else projected
+    const pickG = (t, id, r) => {
+      const chosen = id && (t.goalies || []).find((g) => g.id === +id);
+      return chosen ? { goalie: chosen, why: "selected" } : opts.noRest ? projectStarter(t, date, false) : projectStarter(t, date, r.b2b);
+    };
+    const gH = pickG(H, opts.goalies && opts.goalies.home, restH);
+    const gA = pickG(A, opts.goalies && opts.goalies.away, restA);
+    const fGH = goalieFactor(H, gH && gH.goalie), fGA = goalieFactor(A, gA && gA.goalie);
+    la *= fGH; lh *= fGA;
+
     const p = probabilities(lh, la);
     const mkt = opts.game ? market(opts.game) : null;
     const fH = teamForm(H, date), fA = teamForm(A, date);
     const h2h = headToHead(H, A).filter((g) => g.date < date);
 
-    const ctx = { H, A, L, p, mkt, fH, fA, restH, restA, h2h, lh, la, neutral, game: opts.game };
+    const ctx = { H, A, L, p, mkt, fH, fA, restH, restA, h2h, lh, la, neutral, game: opts.game, gH, gA, fGH, fGA };
     ctx.reasons = findReasons(ctx);
     ctx.angles = findAngles(ctx);
     return ctx;
@@ -251,6 +314,7 @@
     // weak = shown for context, but history says it doesn't predict results, so it never backs an angle
     const add = (side, score, title, text, weak = false) => R.push({ side, score: weak ? score * 0.3 : score, title, text, weak });
     const nm = (t) => t.common || t.abbrev;
+    const poss = (n) => (n.endsWith("s") ? n + "'" : n + "'s");
 
     // Home ice vs road form
     const hHome = ptsPct(H.home), aRoad = ptsPct(A.road);
@@ -313,11 +377,36 @@
       add("away", (stA - stH), "Special-teams mismatch",
         `${nm(A)} power play ${pct(A.ppPct, 1)} vs ${nm(H)} penalty kill ${pct(H.pkPct, 1)}.`);
 
-    // Goaltending
-    if (H.svPct && A.svPct && Math.abs(H.svPct - A.svPct) >= 0.015) {
-      const better = H.svPct > A.svPct ? H : A, worse = better === H ? A : H;
-      add(better === H ? "home" : "away", Math.abs(H.svPct - A.svPct) * 10, "Goaltending gap",
-        `${nm(better)} team save % ${better.svPct.toFixed(3)} vs ${worse.svPct.toFixed(3)} for ${nm(worse)}. Confirm the starter.`);
+    // Starting goalies (research: worth about as much per goal as goal differential)
+    const gName = (g) => (g && g.goalie ? g.goalie.name.split(" ").slice(-1)[0] : "?");
+    const edgeH = (1 - c.fGH) * c.la, edgeA = (1 - c.fGA) * c.lh; // goals saved vs usual
+    if (Math.abs(edgeH - edgeA) >= 0.15 && c.gH && c.gA) {
+      const better = edgeH > edgeA ? "home" : "away";
+      const [bt, bg, wt, wg] = better === "home" ? [H, c.gH, A, c.gA] : [A, c.gA, H, c.gH];
+      add(better, Math.abs(edgeH - edgeA) * 1.2, "Goalie matchup",
+        `${gName(bg)} (${bg.goalie.sv.toFixed(3)} adj. sv%) for ${nm(bt)} vs ${gName(wg)} (${wg.goalie.sv.toFixed(3)}) for ${nm(wt)}${wg.why === "backup likely on a back-to-back" ? ", a likely back-to-back backup" : ""}. Confirm starters.`);
+    }
+
+    // Shot quality: expected goals per game (best predictor before ~game 55)
+    const xgd = (t) => (t.xg && t.xg.gp ? (t.xg.xgf - t.xg.xga) / t.xg.gp : null);
+    if (xgd(H) != null && xgd(A) != null) {
+      const dX = xgd(H) - xgd(A);
+      if (Math.abs(dX) >= 0.35) {
+        const better = dX > 0 ? H : A, worse = dX > 0 ? A : H;
+        add(dX > 0 ? "home" : "away", Math.abs(dX) / 1.6, "Shot-quality edge",
+          `${nm(better)} create ${sgn(xgd(better))} expected goals per game more than they allow; ${nm(worse)} ${sgn(xgd(worse))}.`);
+      }
+    }
+
+    // Luck: shooting % + save % at even strength (PDO) drifts back to ~1.000
+    for (const [t, side, opp] of [[H, "home", "away"], [A, "away", "home"]]) {
+      if (!t.pdo5 || t.gp < 10) continue;
+      if (t.pdo5 >= 1.02)
+        add(opp, (t.pdo5 - 1) * 8, "Running hot",
+          `${poss(nm(t))} even-strength shooting % + save % is ${t.pdo5.toFixed(3)} (average 1.000). That usually cools off, so their record overstates them.`);
+      if (t.pdo5 <= 0.98)
+        add(side, (1 - t.pdo5) * 8, "Running cold",
+          `${poss(nm(t))} even-strength shooting % + save % is ${t.pdo5.toFixed(3)} (average 1.000). Bad luck tends to even out, so they're better than their record.`);
     }
 
     // Season series
@@ -394,5 +483,5 @@
     return ideas.sort((a, b) => b.score - a.score);
   }
 
-  global.JofaModel = { analyze, league, market, toDecimal, implied, fairAmerican, fairDecimal, pct, ptsPct, perGame, teamForm, rest };
+  global.JofaModel = { analyze, projectStarter, league, market, toDecimal, implied, fairAmerican, fairDecimal, pct, ptsPct, perGame, teamForm, rest };
 })(typeof window !== "undefined" ? window : globalThis);
