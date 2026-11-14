@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>JOFA Bets</title>
+  <meta name="description" content="NHL matchup analysis: home ice, road form, goal ratios, model odds and betting angles.">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'><circle cx='32' cy='32' r='30' fill='%2338bdf8'/><ellipse cx='32' cy='38' rx='16' ry='6' fill='%230b1220'/></svg>">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="top">
+    <div class="brand">
+      <span class="puck" aria-hidden="true"></span>
+      <div>
+        <h1>JOFA Bets</h1>
+        <p class="sub">NHL matchup edges · <span id="updated">loading…</span></p>
+      </div>
+    </div>
+    <div class="controls">
+      <label class="fmt">Odds
+        <select id="oddsFmt">
+          <option value="american">American (+120)</option>
+          <option value="decimal">Decimal (2.20)</option>
+        </select>
+      </label>
+    </div>
+  </header>
+
+  <nav class="tabs" role="tablist">
+    <button role="tab" data-tab="slate" aria-selected="true">Slate</button>
+    <button role="tab" data-tab="matchup">Head-to-head</button>
+    <button role="tab" data-tab="teams">Teams</button>
+    <button role="tab" data-tab="about">How it works</button>
+  </nav>
+
+  <main>
+    <section id="tab-slate" class="tab">
+      <div class="toolbar">
+        <div id="dates" class="chips"></div>
+        <input id="filter" type="search" placeholder="Find a team (e.g. EDM, Leafs)" aria-label="Filter games by team">
+        <label class="check"><input type="checkbox" id="onlyAngles"> Only games with an angle</label>
+      </div>
+      <div id="slate" class="cards"></div>
+    </section>
+
+    <section id="tab-matchup" class="tab" hidden>
+      <div class="toolbar matchup-pick">
+        <label>Away <select id="mAway"></select></label>
+        <span class="at">@</span>
+        <label>Home <select id="mHome"></select></label>
+        <label class="check"><input type="checkbox" id="mNeutral"> Neutral site</label>
+        <button id="mSwap" class="ghost" type="button">Swap</button>
+      </div>
+      <div id="matchup" class="cards"></div>
+    </section>
+
+    <section id="tab-teams" class="tab" hidden>
+      <p class="hint">Tap a column to sort. Green = top 8 in the league, red = bottom 8.</p>
+      <div class="table-wrap"><table id="teamTable"></table></div>
+    </section>
+
+    <section id="tab-about" class="tab prose" hidden>
+      <h2>How the numbers are built</h2>
+      <p>Data refreshes automatically from the NHL's official stats feed several times a day. Nothing here needs an account or a key.</p>
+      <ol>
+        <li><b>Team ratings.</b> Each team gets an attack and a defence rating against league average, blended from its <b>home or road split (35%)</b>, <b>full season (45%)</b> and <b>last 10 games (20%)</b>. Small samples are pulled toward league average so a three-game hot streak doesn't take over.</li>
+        <li><b>Expected goals.</b> League scoring at that venue × attack × the opponent's defence. Teams on the second night of a <b>back-to-back</b> lose about 5%.</li>
+        <li><b>Score grid.</b> Those expected goals feed a score-probability grid, tuned to this season's real tie rate (games to OT) and empty-net goals. That produces win %, puck line %, totals and game props.</li>
+        <li><b>Market check.</b> Moneylines from several books (FanDuel, DraftKings and others in the NHL feed) are averaged with the bookmaker margin removed. When the model is 3+ points higher than the market <i>and</i> the stats give a reason, it's flagged as an angle.</li>
+        <li><b>Reasons.</b> Each game is scanned for mismatches: home-ice vs road form, road warriors, goal-ratio gaps, last-10 form, rest, power play vs penalty kill, goaltending and the season series. The strongest one or two are shown with each angle.</li>
+      </ol>
+      <h2>Using it with Bet365</h2>
+      <p>Bet365 doesn't publish a free odds feed, so open any game, pick the market in <b>Check a Bet365 price</b> and type the price you see. The tool tells you the model's chance, what the price implies, and the expected return per $100. <b>Fair odds</b> on every card are the break-even price: if Bet365 pays better than that, the model sees value.</p>
+      <h2>Limits worth knowing</h2>
+      <ul>
+        <li>Starting goalies aren't confirmed in the feed until close to puck drop. Check the starter before betting; a backup in net can flip a lean.</li>
+        <li>Injuries and line changes aren't modelled.</li>
+        <li>Early in the season (under ~15 games) ratings are noisy and lean on league average.</li>
+        <li>Player props aren't covered, by design. Game props shown: overtime yes/no and team totals.</li>
+      </ul>
+      <p class="fine">This is a research aid, not a guarantee. Bet only what you can afford to lose. Ontario: ConnexOntario 1-866-531-2600 · Elsewhere in Canada: <a href="https://www.responsiblegambling.org" rel="noopener">responsiblegambling.org</a>.</p>
+    </section>
+  </main>
+
+  <footer class="foot">Stats: NHL public API. For entertainment and research. 19+.</footer>
+
+  <script src="model.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

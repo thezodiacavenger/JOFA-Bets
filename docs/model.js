@@ -1,0 +1,386 @@
+/* JOFA Bets — matchup model and "angle" finder.
+ *
+ * How it works (plain English):
+ *  1. Each team gets an attack and defence rating relative to league average,
+ *     built from: its home-or-road split (35%), full season (45%), last 10 (20%).
+ *     Small samples are pulled toward league average so 3 hot games don't dominate.
+ *  2. Expected goals for each side = league average at that venue x attack x
+ *     opponent's defence, with a penalty for teams on a back-to-back.
+ *  3. A Poisson score grid (tuned to real NHL tie and empty-net rates) gives
+ *     win %, puck line %, totals % and simple game props.
+ *  4. Model % is compared with the bookmakers' prices to find gaps, and the
+ *     stats are scanned for the strongest reasons supporting each side.
+ */
+(function (global) {
+  "use strict";
+
+  const W_SPLIT = 0.35, W_SEASON = 0.45, W_L10 = 0.2;
+  const SHRINK_GAMES = 6;      // games of league-average "prior" mixed in
+  const SHRINK_SPLIT = 10;     // home/road splits are noisier, so pull them harder
+  const B2B_ATTACK = 0.95;     // back-to-back team scores ~5% less
+  const B2B_DEFENCE = 1.05;    // ...and allows ~5% more
+  const TIE_BOOST = 1.6;      // NHL games tie in regulation more than Poisson says
+  const EMPTY_NET = 0.28;       // share of 1-goal regulation leads that become 2 (empty net)
+  const MAX_GOALS = 11;
+  const GOAL_SCALE = 0.97;    // trims scoring so totals match this season's results
+  const HOME_EDGE = 1.03;     // small extra home lift (last change, crowd, matchups)
+
+  // ---------- helpers ----------
+  const sum = (a, f) => a.reduce((s, x) => s + f(x), 0);
+  const pct = (x, d = 0) => (x == null || isNaN(x) ? "–" : (x * 100).toFixed(d) + "%");
+  const ptsPct = (s) => (s && s.gp ? s.pts / (2 * s.gp) : null);
+  const perGame = (s, k) => (s && s.gp ? s[k] / s.gp : null);
+
+  function poisson(lambda, k) {
+    let p = Math.exp(-lambda);
+    for (let i = 1; i <= k; i++) p *= lambda / i;
+    return p;
+  }
+
+  // ---------- odds ----------
+  function toDecimal(v) {
+    if (v == null || v === "") return null;
+    const s = String(v).trim();
+    const n = parseFloat(s);
+    if (isNaN(n)) return null;
+    if (s.startsWith("+") || s.startsWith("-") || Math.abs(n) >= 100) {
+      return n > 0 ? 1 + n / 100 : 1 + 100 / Math.abs(n);
+    }
+    return n > 1 ? n : null;
+  }
+  const implied = (v) => { const d = toDecimal(v); return d ? 1 / d : null; };
+  function fairAmerican(p) {
+    if (!p || p <= 0 || p >= 1) return "–";
+    const v = p >= 0.5 ? -100 * p / (1 - p) : 100 * (1 - p) / p;
+    return (v > 0 ? "+" : "") + Math.round(v);
+  }
+  const fairDecimal = (p) => (!p || p <= 0 ? "–" : (1 / p).toFixed(2));
+
+  // Consensus no-vig market probability from the books in the NHL feed.
+  // 3-way (regulation-only) books are dropped: their prices add up to < 100%.
+  function market(game) {
+    const rows = [];
+    for (const a of game.awayOdds || []) {
+      const h = (game.homeOdds || []).find((x) => x.book === a.book);
+      if (!h) continue;
+      const ia = implied(a.value), ih = implied(h.value);
+      if (!ia || !ih) continue;
+      const total = ia + ih;
+      if (total < 0.98 || total > 1.15) continue;
+      rows.push({ book: a.book, away: a.value, home: h.value, pAway: ia / total, pHome: ih / total,
+                  decAway: toDecimal(a.value), decHome: toDecimal(h.value) });
+    }
+    if (!rows.length) return null;
+    const sorted = rows.map((r) => r.pHome).sort((a, b) => a - b);
+    const median = sorted[Math.floor(sorted.length / 2)];
+    const good = rows.filter((r) => Math.abs(r.pHome - median) <= 0.06);
+    rows.length = 0; rows.push(...good);
+    const pHome = sum(rows, (r) => r.pHome) / rows.length;
+    const bestHome = rows.reduce((b, r) => (r.decHome > b.decHome ? r : b));
+    const bestAway = rows.reduce((b, r) => (r.decAway > b.decAway ? r : b));
+    return { books: rows, pHome, pAway: 1 - pHome, bestHome, bestAway };
+  }
+
+  // ---------- league context ----------
+  function league(teams) {
+    const T = Object.values(teams);
+    const gp = sum(T, (t) => t.gp) || 1;
+    const homeGp = sum(T, (t) => t.home.gp) || 1;
+    const roadGp = sum(T, (t) => t.road.gp) || 1;
+    const games = [];
+    for (const t of T) for (const g of t.games) if (g.home) games.push(g);
+    const n = games.length || 1;
+    return {
+      all: sum(T, (t) => t.gf) / gp,
+      home: sum(T, (t) => t.home.gf) / homeGp,
+      road: sum(T, (t) => t.road.gf) / roadGp,
+      pp: sum(T, (t) => t.ppPct || 0) / T.length,
+      pk: sum(T, (t) => t.pkPct || 0) / T.length,
+      sv: sum(T, (t) => t.svPct || 0) / T.length,
+      homeWin: games.filter((g) => g.gf > g.ga).length / n,
+      otRate: games.filter((g) => g.end !== "REG").length / n,
+      avgTotal: sum(games, (g) => g.gf + g.ga) / n,
+    };
+  }
+
+  // ---------- team form from the game log ----------
+  function teamForm(t, beforeDate) {
+    const games = t.games.filter((g) => !beforeDate || g.date < beforeDate);
+    const n = games.length || 1;
+    const over = (line) => games.filter((g) => g.gf + g.ga > line).length / n;
+    const last5 = games.slice(-5);
+    return {
+      n: games.length,
+      over55: over(5.5), over65: over(6.5),
+      otRate: games.filter((g) => g.end !== "REG").length / n,
+      winBy2: games.filter((g) => g.gf - g.ga >= 2).length / n,
+      coverPlus: games.filter((g) => g.gf - g.ga >= -1).length / n,
+      scored3: games.filter((g) => g.gf >= 3).length / n,
+      shutOut: games.filter((g) => g.gf === 0).length / n,
+      last5: last5.map((g) => (g.gf > g.ga ? "W" : g.end === "REG" ? "L" : "O")).join(""),
+      last5Goals: last5.length ? sum(last5, (g) => g.gf) / last5.length : null,
+      last5Against: last5.length ? sum(last5, (g) => g.ga) / last5.length : null,
+    };
+  }
+
+  function rest(t, date) {
+    const prev = (t.schedule || []).filter((d) => d < date).pop();
+    if (!prev) return { days: null, b2b: false };
+    const days = Math.round((new Date(date) - new Date(prev)) / 86400000);
+    return { days, b2b: days === 1, prev };
+  }
+
+  function headToHead(home, away) {
+    return home.games.filter((g) => g.opp === away.abbrev);
+  }
+
+  // ---------- ratings ----------
+  function shrunk(goals, gp, lgRate, k = SHRINK_GAMES) {
+    return (goals + k * lgRate) / (gp + k) / lgRate;
+  }
+
+  function rating(t, venue, L) {
+    const lgFor = venue === "home" ? L.home : venue === "road" ? L.road : L.all;
+    const lgAgainst = venue === "home" ? L.road : venue === "road" ? L.home : L.all;
+    const parts = [
+      [W_SEASON, shrunk(t.gf, t.gp, L.all), shrunk(t.ga, t.gp, L.all)],
+      [W_L10, shrunk(t.l10.gf, t.l10.gp, L.all), shrunk(t.l10.ga, t.l10.gp, L.all)],
+    ];
+    if (venue !== "neutral") {
+      const s = t[venue];
+      parts.push([W_SPLIT, shrunk(s.gf, s.gp, lgFor, SHRINK_SPLIT), shrunk(s.ga, s.gp, lgAgainst, SHRINK_SPLIT)]);
+    }
+    const w = sum(parts, (p) => p[0]);
+    return {
+      att: sum(parts, (p) => p[0] * p[1]) / w,
+      def: sum(parts, (p) => p[0] * p[2]) / w,
+    };
+  }
+
+  // ---------- score grid ----------
+  function grid(lh, la) {
+    const P = [];
+    let tie = 0, total = 0;
+    for (let h = 0; h <= MAX_GOALS; h++) {
+      P[h] = [];
+      for (let a = 0; a <= MAX_GOALS; a++) {
+        let p = poisson(lh, h) * poisson(la, a);
+        if (h === a) p *= TIE_BOOST;
+        P[h][a] = p;
+        total += p;
+      }
+    }
+    for (let h = 0; h <= MAX_GOALS; h++) for (let a = 0; a <= MAX_GOALS; a++) P[h][a] /= total;
+    // Empty-net goals: some 1-goal leads become 2-goal wins.
+    for (let h = 0; h < MAX_GOALS; h++) {
+      for (let a = 0; a < MAX_GOALS; a++) {
+        if (h - a === 1) { const m = P[h][a] * EMPTY_NET; P[h][a] -= m; P[h + 1][a] += m; }
+        if (a - h === 1) { const m = P[h][a] * EMPTY_NET; P[h][a] -= m; P[h][a + 1] += m; }
+      }
+    }
+    for (let h = 0; h <= MAX_GOALS; h++) tie += P[h][h];
+    return { P, tie };
+  }
+
+  function probabilities(lh, la) {
+    const { P, tie } = grid(lh, la);
+    const otHome = 0.5 + 0.5 * (lh / (lh + la) - 0.5); // OT/shootout leans slightly to better side
+    const out = { regHome: 0, regAway: 0, tie, homeBy2: 0, awayBy2: 0, totals: {}, homeTT: {}, awayTT: {}, btts: 0, expTotal: 0 };
+    const lines = [4.5, 5.5, 6.5, 7.5];
+    const tt = [1.5, 2.5, 3.5, 4.5];
+    lines.forEach((l) => (out.totals[l] = 0));
+    tt.forEach((l) => { out.homeTT[l] = 0; out.awayTT[l] = 0; });
+    for (let h = 0; h <= MAX_GOALS; h++) {
+      for (let a = 0; a <= MAX_GOALS; a++) {
+        const p = P[h][a];
+        if (h > a) out.regHome += p;
+        if (a > h) out.regAway += p;
+        if (h - a >= 2) out.homeBy2 += p;
+        if (a - h >= 2) out.awayBy2 += p;
+        // Final scores: a tied game gets one extra goal for the OT/shootout winner.
+        const cases = h === a ? [[h + 1, a, otHome], [h, a + 1, 1 - otHome]] : [[h, a, 1]];
+        for (const [fh, fa, w] of cases) {
+          for (const l of lines) if (fh + fa > l) out.totals[l] += p * w;
+          for (const l of tt) { if (fh > l) out.homeTT[l] += p * w; if (fa > l) out.awayTT[l] += p * w; }
+          if (fh > 0 && fa > 0) out.btts += p * w;
+          out.expTotal += p * w * (fh + fa);
+        }
+      }
+    }
+    out.home = out.regHome + tie * otHome;
+    out.away = 1 - out.home;
+    return out;
+  }
+
+  // ---------- full analysis of one matchup ----------
+  function analyze(data, homeAb, awayAb, opts = {}) {
+    const teams = data.teams;
+    const H = teams[homeAb], A = teams[awayAb];
+    const L = data._league || (data._league = league(teams));
+    const date = opts.date || new Date().toISOString().slice(0, 10);
+    const neutral = !!opts.neutral;
+
+    const rh = rating(H, neutral ? "neutral" : "home", L);
+    const ra = rating(A, neutral ? "neutral" : "road", L);
+    const none = { days: null, b2b: false };
+    const restH = opts.noRest ? none : rest(H, date), restA = opts.noRest ? none : rest(A, date);
+
+    let lh = (neutral ? L.all : L.home * HOME_EDGE) * rh.att * ra.def * GOAL_SCALE;
+    let la = (neutral ? L.all : L.road / HOME_EDGE) * ra.att * rh.def * GOAL_SCALE;
+    if (restH.b2b) { lh *= B2B_ATTACK; la *= B2B_DEFENCE; }
+    if (restA.b2b) { la *= B2B_ATTACK; lh *= B2B_DEFENCE; }
+
+    const p = probabilities(lh, la);
+    const mkt = opts.game ? market(opts.game) : null;
+    const fH = teamForm(H, date), fA = teamForm(A, date);
+    const h2h = headToHead(H, A).filter((g) => g.date < date);
+
+    const ctx = { H, A, L, p, mkt, fH, fA, restH, restA, h2h, lh, la, neutral, game: opts.game };
+    ctx.reasons = findReasons(ctx);
+    ctx.angles = findAngles(ctx);
+    return ctx;
+  }
+
+  // ---------- reasons: stat-based mismatches ----------
+  function findReasons(c) {
+    const { H, A, L, fH, fA, restH, restA, h2h, p, neutral } = c;
+    const R = [];
+    const add = (side, score, title, text) => R.push({ side, score, title, text });
+    const nm = (t) => t.common || t.abbrev;
+
+    // Home ice vs road form
+    const hHome = ptsPct(H.home), aRoad = ptsPct(A.road);
+    if (!neutral && H.home.gp >= 3 && A.road.gp >= 3) {
+      const gap = hHome - aRoad;
+      if (gap >= 0.15)
+        add("home", gap, "Home-ice edge",
+          `${nm(H)} earn ${pct(hHome)} of points at home; ${nm(A)} only ${pct(aRoad)} on the road.`);
+      if (gap <= -0.12)
+        add("away", -gap, "Road team travels well",
+          `${nm(A)} earn ${pct(aRoad)} of points on the road vs ${nm(H)}'s ${pct(hHome)} at home.`);
+    }
+    // Road warriors / home-weak
+    if (A.road.gp >= 4 && aRoad >= 0.65 && aRoad > ptsPct(A.home) + 0.05)
+      add("away", aRoad - 0.5, "Road warriors",
+        `${nm(A)} are ${A.road.w}-${A.road.l}-${A.road.otl} away from home — better than at home (${pct(ptsPct(A.home))}).`);
+    if (!neutral && H.home.gp >= 4 && hHome <= 0.4)
+      add("away", 0.5 - hHome, "Weak at home",
+        `${nm(H)} are just ${H.home.w}-${H.home.l}-${H.home.otl} at home (${pct(hHome)} of points).`);
+
+    // Goal ratio
+    const ratio = (t) => t.gf / Math.max(t.ga, 1);
+    const rH = ratio(H), rA = ratio(A);
+    if (Math.abs(rH - rA) >= 0.25) {
+      const better = rH > rA ? H : A, worse = rH > rA ? A : H;
+      add(rH > rA ? "home" : "away", Math.abs(rH - rA) / 2, "Goal-ratio gap",
+        `${nm(better)} score ${ratio(better).toFixed(2)} goals for every 1 allowed vs ${ratio(worse).toFixed(2)} for ${nm(worse)}.`);
+    }
+
+    // Recent form
+    const l10 = (t) => `${t.l10.w}-${t.l10.l}-${t.l10.otl}`;
+    const dForm = H.l10.pts - A.l10.pts;
+    if (Math.abs(dForm) >= 5) {
+      const hot = dForm > 0 ? H : A, cold = dForm > 0 ? A : H;
+      add(dForm > 0 ? "home" : "away", Math.abs(dForm) / 20, "Form gap (last 10)",
+        `${nm(hot)} are ${l10(hot)} in their last 10; ${nm(cold)} are ${l10(cold)}.`);
+    }
+
+    // Rest
+    if (restH.b2b && !restA.b2b)
+      add("away", 0.3, "Tired legs", `${nm(H)} played yesterday (back-to-back); ${nm(A)} ${restA.days ? `had ${restA.days - 1} day(s) off` : "are rested"}.`);
+    if (restA.b2b && !restH.b2b)
+      add("home", 0.3, "Tired legs", `${nm(A)} played yesterday (back-to-back); ${nm(H)} ${restH.days ? `had ${restH.days - 1} day(s) off` : "are rested"}.`);
+
+    // Special teams
+    const st = (x, y) => (x.ppPct - L.pp) + (L.pk - y.pkPct);
+    const stH = st(H, A), stA = st(A, H);
+    if (stH - stA >= 0.08 && H.ppPct != null)
+      add("home", (stH - stA), "Special-teams mismatch",
+        `${nm(H)} power play ${pct(H.ppPct, 1)} vs ${nm(A)} penalty kill ${pct(A.pkPct, 1)}.`);
+    if (stA - stH >= 0.08 && A.ppPct != null)
+      add("away", (stA - stH), "Special-teams mismatch",
+        `${nm(A)} power play ${pct(A.ppPct, 1)} vs ${nm(H)} penalty kill ${pct(H.pkPct, 1)}.`);
+
+    // Goaltending
+    if (H.svPct && A.svPct && Math.abs(H.svPct - A.svPct) >= 0.015) {
+      const better = H.svPct > A.svPct ? H : A, worse = better === H ? A : H;
+      add(better === H ? "home" : "away", Math.abs(H.svPct - A.svPct) * 10, "Goaltending gap",
+        `${nm(better)} team save % ${better.svPct.toFixed(3)} vs ${worse.svPct.toFixed(3)} for ${nm(worse)}. Confirm the starter.`);
+    }
+
+    // Season series
+    if (h2h.length >= 2) {
+      const hw = h2h.filter((g) => g.gf > g.ga).length;
+      if (hw === h2h.length || hw === 0)
+        add(hw ? "home" : "away", 0.15, "Season series",
+          `${hw ? nm(H) : nm(A)} have won all ${h2h.length} meetings this season.`);
+    }
+
+    // Totals
+    const expTotal = p.expTotal;
+    const over65 = (fH.over65 + fA.over65) / 2;
+    if (p.totals[6.5] >= 0.55 || (over65 >= 0.6 && expTotal > L.avgTotal))
+      add("over", Math.max(p.totals[6.5] - 0.5, over65 - 0.5) + 0.05, "Goals expected",
+        `Model expects ${expTotal.toFixed(1)} goals. ${nm(H)} games go over 6.5 ${pct(fH.over65)} of the time, ${nm(A)} ${pct(fA.over65)}.`);
+    if (p.totals[5.5] <= 0.47 || (over65 <= 0.35 && expTotal < L.avgTotal))
+      add("under", Math.max(0.5 - p.totals[5.5], 0.5 - over65) + 0.05, "Low-event matchup",
+        `Model expects ${expTotal.toFixed(1)} goals. Overs on 6.5: ${nm(H)} ${pct(fH.over65)}, ${nm(A)} ${pct(fA.over65)}.`);
+
+    return R.sort((a, b) => b.score - a.score);
+  }
+
+  // ---------- angles: ranked betting ideas ----------
+  function findAngles(c) {
+    const { H, A, p, mkt, reasons, fH, fA } = c;
+    const ideas = [];
+    const supporting = (side) => reasons.filter((r) => r.side === side).slice(0, 2);
+    const nm = (t) => t.abbrev;
+
+    // Moneyline: compare to market if we have it
+    for (const side of ["home", "away"]) {
+      const team = side === "home" ? H : A;
+      const model = p[side];
+      const why = supporting(side);
+      if (mkt) {
+        const mp = side === "home" ? mkt.pHome : mkt.pAway;
+        const best = side === "home" ? mkt.bestHome : mkt.bestAway;
+        const dec = side === "home" ? best.decHome : best.decAway;
+        const ev = model * dec - 1;
+        const edge = model - mp;
+        if (edge >= 0.03 && why.length)
+          ideas.push({ caution: edge >= 0.1, market: "Moneyline", pick: `${nm(team)} ML`, side, model, marketP: mp, ev, best: { book: best.book, price: side === "home" ? best.home : best.away },
+            score: edge * 3 + why.length * 0.05, why });
+      } else if (model >= 0.62 && why.length) {
+        ideas.push({ market: "Moneyline", pick: `${nm(team)} ML`, side, model, score: (model - 0.55) + why.length * 0.05, why });
+      }
+    }
+
+    // Puck line: favourite -1.5 when model says multi-goal win is likely
+    const fav = p.home >= p.away ? "home" : "away";
+    const favTeam = fav === "home" ? H : A, dogTeam = fav === "home" ? A : H;
+    const by2 = fav === "home" ? p.homeBy2 : p.awayBy2;
+    const favForm = fav === "home" ? fH : fA, dogForm = fav === "home" ? fA : fH;
+    if (by2 >= 0.45 && favForm.winBy2 >= 0.45)
+      ideas.push({ market: "Puck line", pick: `${nm(favTeam)} -1.5`, side: fav, model: by2,
+        score: (by2 - 0.42) * 1.5, why: [...supporting(fav).slice(0, 1),
+          { title: "Wins big", text: `${favTeam.common} win by 2+ in ${pct(favForm.winBy2)} of games; model ${pct(by2)}.` }] });
+    const dogCover = 1 - by2;
+    if (dogCover >= 0.74 && dogForm.coverPlus >= 0.75 && p[fav] < 0.6)
+      ideas.push({ market: "Puck line", pick: `${nm(dogTeam)} +1.5`, side: fav === "home" ? "away" : "home", model: dogCover,
+        score: (dogCover - 0.7), why: [{ title: "Stays close", text: `${dogTeam.common} win or lose by 1 in ${pct(dogForm.coverPlus)} of games; model ${pct(dogCover)}.` }] });
+
+    // Totals
+    for (const side of ["over", "under"]) {
+      const r = reasons.find((x) => x.side === side);
+      if (!r) continue;
+      const line = side === "over" ? 6.5 : 5.5;
+      const model = side === "over" ? p.totals[6.5] : 1 - p.totals[5.5];
+      if (model < 0.56) continue;
+      ideas.push({ market: "Total", pick: `${side === "over" ? "Over" : "Under"} ${line}`, side, model, score: r.score, why: [r] });
+    }
+
+    return ideas.sort((a, b) => b.score - a.score);
+  }
+
+  global.JofaModel = { analyze, league, market, toDecimal, implied, fairAmerican, fairDecimal, pct, ptsPct, perGame, teamForm, rest };
+})(typeof window !== "undefined" ? window : globalThis);
