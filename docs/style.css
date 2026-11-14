@@ -222,3 +222,24 @@ code { background: var(--panel-2); padding: 1px 5px; border-radius: 4px; font-si
 .goalies-row .gp { display: flex; align-items: center; gap: 6px; }
 .goalies-row select { padding: 4px 8px; font-size: .85rem; max-width: 260px; }
 .prose h2.round { margin-top: 2.6em; padding-top: 1.4em; border-top: 1px solid var(--line); }
+
+/* parlay */
+.pcards { display: grid; gap: 14px; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); }
+.pcard { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 14px 16px; }
+.pcard h3 { margin: 0 0 2px; font-size: 1.05rem; }
+.pcard p { margin: 6px 0 0; }
+.phead { display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; margin-bottom: 8px; }
+.psum { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1px; background: var(--line); border: 1px solid var(--line); border-radius: 10px; overflow: hidden; margin-top: 12px; }
+.psum > div { background: var(--panel-2); padding: 8px 12px; display: flex; flex-direction: column; gap: 2px; }
+.psum .l { color: var(--muted); font-size: .72rem; text-transform: uppercase; letter-spacing: .04em; }
+.psum b { font-size: 1.15rem; font-variant-numeric: tabular-nums; }
+.psum .badge { align-self: flex-start; margin-top: 2px; font-size: .72rem; }
+.ph2 { font-size: 1.05rem; margin: 26px 0 10px; }
+#parlayTicket { margin-bottom: 14px; }
+.pprice { width: 74px; padding: 4px 6px; text-align: right; }
+.pgame { padding: 10px 0; border-bottom: 1px solid var(--line); }
+.pgame-h { font-weight: 700; margin-bottom: 6px; }
+.pchips { display: flex; flex-wrap: wrap; gap: 6px; }
+.pleg { font-size: .85rem; }
+.pleg[aria-pressed="true"] .small { color: #04111d; }
+@media (max-width: 560px) { .pcards { grid-template-columns: 1fr; } .psum b { font-size: 1rem; } }

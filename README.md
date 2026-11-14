@@ -16,6 +16,7 @@ An NHL game-betting research aid. Built for traditional bets on Bet365 and simil
 - **Head-to-head:** any two teams in seconds, scheduled or not, with a neutral-site option.
 - **Research:** a 5-season study (6,533 games) of whether home ice, road form and scoring style predict results. Short version: home ice is worth about 3–4 points, team home/road records don't persist, goal differential is the best guide, and scoring style doesn't decide winners or move totals much.
 - **Starting goalie picker** on every upcoming game: projected from recent starts (switching to the other goalie when the usual starter played the night before). Change it once starters are confirmed and every number updates.
+- **Parlay:** tonight's "optimistic parlay" (the highest-value moneylines, one per game), a "most likely to hit" ticket with its honest value, and a builder: tap legs (moneylines, puck lines, totals), type your book's prices and any parlay boost, and see the hit chance, payout and value. Legs that cost value are shown in red, and same-game legs are flagged.
 - **Bet log:** tap "+ Log bet" on any angle (or add one by hand), mark W/L/P, and see record, profit, return and **closing line value** (auto-filled for moneylines logged from the slate). Stored on the device you use; export to CSV.
 - **Teams:** sortable table of home vs road form, road-minus-home gap (road warriors), goal ratio, last 10, special teams, save %, over/OT rates.
 

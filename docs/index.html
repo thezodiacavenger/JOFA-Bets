@@ -30,6 +30,7 @@
   <nav class="tabs" role="tablist">
     <button role="tab" data-tab="slate" aria-selected="true">Slate</button>
     <button role="tab" data-tab="matchup">Head-to-head</button>
+    <button role="tab" data-tab="parlay">Parlay</button>
     <button role="tab" data-tab="teams">Teams</button>
     <button role="tab" data-tab="research">Research</button>
     <button role="tab" data-tab="log">Bet log</button>
@@ -55,6 +56,14 @@
         <button id="mSwap" class="ghost" type="button">Swap</button>
       </div>
       <div id="matchup" class="cards"></div>
+    </section>
+
+    <section id="tab-parlay" class="tab" hidden>
+      <p class="hint">Parlays for <b id="parlayDate"></b> (change the date on the Slate tab). Goalie picks from the Slate carry over. A parlay multiplies each leg's edge: legs the model rates as good value compound in your favour, and weak legs compound against you.</p>
+      <div id="parlayAuto" class="pcards"></div>
+      <h2 class="ph2">Build your own</h2>
+      <div id="parlayTicket" class="pcard"></div>
+      <div id="parlayLegs"></div>
     </section>
 
     <section id="tab-teams" class="tab" hidden>

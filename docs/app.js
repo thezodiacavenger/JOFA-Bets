@@ -49,6 +49,7 @@
     setupMatchup();
     renderTeams();
     BetLog.init();
+    Parlay.init();
   }
 
   // ---------- tabs ----------
@@ -58,6 +59,7 @@
       buttons.forEach((b) => b.setAttribute("aria-selected", b.dataset.tab === name));
       document.querySelectorAll(".tab").forEach((s) => (s.hidden = s.id !== "tab-" + name));
       store.set("tab", name);
+      if (name === "parlay" && DATA) Parlay.render();
     };
     buttons.forEach((b) => b.addEventListener("click", () => show(b.dataset.tab)));
     show(store.get("tab", "slate"));
@@ -399,6 +401,167 @@
     });
     draw();
   }
+
+  // ---------- parlays ----------
+  // A parlay pays the leg prices multiplied together and wins only if every leg wins,
+  // so each leg's edge (good or bad) compounds. Legs from different games are treated
+  // as independent; legs from the same game are not, and are flagged.
+  const Parlay = {
+    ticket: [],
+    boost: 0,
+    legsFor(date) {
+      const out = [];
+      for (const g of DATA.games.filter((x) => x.date === date && (x.state === "FUT" || x.state === "PRE"))) {
+        if (!DATA.teams[g.home] || !DATA.teams[g.away]) continue;
+        const c = M.analyze(DATA, g.home, g.away, { date: g.date, neutral: g.neutral, game: g, goalies: goalieOverride[cardKey(g)] });
+        const { H, A, p, mkt } = c;
+        const game = `${A.abbrev} @ ${H.abbrev}`;
+        const typical = (side) => {
+          if (!mkt) return null;
+          const decs = mkt.books.map((b) => (side === "home" ? b.decHome : b.decAway));
+          return decs.reduce((a, b) => a + b, 0) / decs.length;
+        };
+        const goalies = `${c.gA ? c.gA.goalie.name.split(" ").slice(-1)[0] : "?"} vs ${c.gH ? c.gH.goalie.name.split(" ").slice(-1)[0] : "?"}`;
+        const add = (key, label, market, prob, dec) => out.push({ key: `${g.id}|${key}`, gameId: g.id, game, label, market, p: prob, dec, goalies });
+        add("ml-a", `${A.abbrev} ML`, "Moneyline", p.away, typical("away"));
+        add("ml-h", `${H.abbrev} ML`, "Moneyline", p.home, typical("home"));
+        add("pl-a+", `${A.abbrev} +1.5`, "Puck line", 1 - p.homeBy2, null);
+        add("pl-h+", `${H.abbrev} +1.5`, "Puck line", 1 - p.awayBy2, null);
+        add("pl-a-", `${A.abbrev} -1.5`, "Puck line", p.awayBy2, null);
+        add("pl-h-", `${H.abbrev} -1.5`, "Puck line", p.homeBy2, null);
+        for (const l of [5.5, 6.5]) {
+          add(`o${l}`, `Over ${l} (${game})`, "Total", p.totals[l], null);
+          add(`u${l}`, `Under ${l} (${game})`, "Total", 1 - p.totals[l], null);
+        }
+      }
+      return out;
+    },
+    combine(legs, boost = 0) {
+      const P = legs.reduce((a, l) => a * l.p, 1);
+      const decs = legs.map((l) => l.dec);
+      if (decs.some((d) => !d)) return { P, dec: null, ev: null };
+      const raw = decs.reduce((a, d) => a * d, 1);
+      const dec = 1 + (raw - 1) * (1 + boost);
+      return { P, dec, ev: P * dec - 1 };
+    },
+    autoPicks(legs) {
+      const ml = legs.filter((l) => l.market === "Moneyline" && l.dec);
+      const byGame = (arr) => { const seen = new Set(); return arr.filter((l) => !seen.has(l.gameId) && seen.add(l.gameId)); };
+      const withEv = ml.map((l) => ({ ...l, ev: l.p * l.dec - 1 }));
+      const value = byGame(withEv.filter((l) => l.ev > 0 && l.p >= 0.4).sort((a, b) => b.ev - a.ev)).slice(0, 4);
+      const likely = byGame([...withEv].sort((a, b) => b.p - a.p)).slice(0, 3);
+      return { value, likely, ml: withEv };
+    },
+    american(dec) { return price(String(dec.toFixed(4))); },
+    ticketCard(title, sub, legs, note) {
+      if (!legs.length) return "";
+      const r = this.combine(legs);
+      const verdict = r.ev == null ? "" : r.ev > 0.03 ? `<span class="badge good">VALUE</span>` : r.ev > -0.05 ? `<span class="badge meh">ROUGHLY FAIR</span>` : `<span class="badge bad">BOOK'S EDGE</span>`;
+      return `<div class="pcard">
+        <div class="phead"><div><h3>${title}</h3><p class="small">${sub}</p></div>
+          <button class="ghost padd" type="button" data-keys="${esc(legs.map((l) => l.key).join(","))}">Copy to builder</button></div>
+        <table class="lines"><thead><tr><th>Leg</th><th class="n">Model</th><th class="n">Price</th><th class="n">Leg value</th></tr></thead><tbody>
+        ${legs.map((l) => `<tr><td><b>${esc(l.label)}</b> <span class="small">${esc(l.game)} · ${esc(l.goalies)}</span></td><td class="n">${pct(l.p)}</td>
+          <td class="n">${l.dec ? this.american(l.dec) : "–"}</td><td class="n ${l.ev > 0 ? "pos" : "neg"}">${l.ev >= 0 ? "+" : "−"}$${Math.abs(l.ev * 100).toFixed(1)}</td></tr>`).join("")}
+        </tbody></table>
+        <div class="psum">
+          <div><span class="l">Hits</span><b>${pct(r.P, 1)}</b><span class="small">about 1 in ${(1 / r.P).toFixed(1)}</span></div>
+          <div><span class="l">Pays</span><b>${r.dec ? this.american(r.dec) : "–"}</b><span class="small">${r.dec ? `$10 returns $${(10 * r.dec).toFixed(2)}` : ""}</span></div>
+          <div><span class="l">Value per $100</span><b class="${r.ev > 0 ? "pos" : "neg"}">${r.ev == null ? "–" : (r.ev >= 0 ? "+" : "−") + "$" + Math.abs(r.ev * 100).toFixed(2)}</b>${verdict}</div>
+        </div>
+        ${note ? `<p class="small">${note}</p>` : ""}
+      </div>`;
+    },
+    render() {
+      const date = activeDate;
+      const legs = this.legsFor(date);
+      this.legs = legs;
+      const { value, likely, ml } = this.autoPicks(legs);
+      $("#parlayDate").textContent = date ? localDay(date) : "";
+      let auto = "";
+      if (!ml.length) {
+        auto = `<div class="empty">No upcoming games with prices for this date. Pick another date on the Slate tab.</div>`;
+      } else {
+        auto += value.length >= 2
+          ? this.ticketCard("Tonight's optimistic parlay", "Every leg is one the model rates as better than its price. The highest-value legs, one per game.", value,
+              "Prices are the average across the books in the NHL feed; check your book's prices in the builder. Each leg's edge is the model's opinion against the market. If the model is a couple of points too confident on every leg, a 4-leg parlay magnifies that, so the value shown is optimistic by design. Stake it like a long shot.")
+          : `<div class="pcard"><h3>Tonight's optimistic parlay</h3><p>Only ${value.length} moneyline${value.length === 1 ? "" : "s"} tonight rate${value.length === 1 ? "s" : ""} as better than the price, which isn't enough for a value parlay. ${value.length ? `The one to look at as a single: <b>${esc(value[0].label)}</b> (${pct(value[0].p)}, ${this.american(value[0].dec)}).` : "Sitting out is the value play."} Puck lines and totals can add legs: price them in the builder below.</p></div>`;
+        auto += this.ticketCard("Most likely to hit", "The three biggest model favourites, one per game. Wins most often, but check the value line.", likely,
+          "Favourites are usually priced to the book's advantage, and stacking them stacks that edge.");
+      }
+      $("#parlayAuto").innerHTML = auto;
+      // builder list
+      const games = [...new Set(legs.map((l) => l.game))];
+      $("#parlayLegs").innerHTML = games.map((gm) => `<div class="pgame"><div class="pgame-h">${esc(gm)} <span class="small">${esc(legs.find((l) => l.game === gm).goalies)}</span></div>
+        <div class="pchips">${legs.filter((l) => l.game === gm).map((l) => `<button type="button" class="chip pleg" data-key="${esc(l.key)}" aria-pressed="${this.ticket.some((t) => t.key === l.key)}">${esc(l.label.replace(` (${gm})`, ""))} <span class="small">${pct(l.p)} · fair ${fair(l.p)}</span></button>`).join("")}</div></div>`).join("")
+        || `<p class="small">No upcoming games for this date.</p>`;
+      this.renderTicket();
+    },
+    renderTicket() {
+      const T = this.ticket;
+      if (!T.length) { $("#parlayTicket").innerHTML = `<p class="small">Tap legs below to build a ticket. Then type the prices your book shows.</p>`; return; }
+      const legs = T.map((t) => ({ ...t, dec: M.toDecimal(t.price) }));
+      const games = legs.map((l) => l.gameId);
+      const sameGame = games.length !== new Set(games).size;
+      const r = this.combine(legs, this.boost / 100);
+      const legVal = (l) => (l.dec ? l.p * l.dec - 1 : null);
+      $("#parlayTicket").innerHTML = `<table class="lines"><thead><tr><th>Leg</th><th class="n">Model</th><th class="n">Fair</th><th class="n">Book price</th><th class="n">Leg value</th><th></th></tr></thead><tbody>
+        ${legs.map((l, i) => { const v = legVal(l); return `<tr><td><b>${esc(l.label)}</b> <span class="small">${esc(l.game)}</span></td><td class="n">${pct(l.p)}</td><td class="n">${fair(l.p)}</td>
+          <td class="n"><input class="pprice" data-i="${i}" value="${esc(l.price)}" size="6" placeholder="${fmt === "decimal" ? "2.10" : "+110"}" aria-label="Book price"></td>
+          <td class="n ${v > 0 ? "pos" : v < 0 ? "neg" : ""}">${v == null ? "–" : (v >= 0 ? "+" : "−") + "$" + Math.abs(v * 100).toFixed(1)}</td>
+          <td><button class="ghost pdel" data-i="${i}" type="button" aria-label="Remove">✕</button></td></tr>`; }).join("")}</tbody></table>
+        <div class="toolbar" style="margin-top:10px"><label class="check">Parlay boost % <input id="pboost" value="${this.boost || ""}" size="4" inputmode="decimal" placeholder="0"></label>
+          <button class="ghost" id="plog" type="button" ${r.dec ? "" : "disabled"}>+ Log parlay</button><button class="ghost" id="pclear" type="button">Clear</button></div>
+        ${sameGame ? `<p class="caution">Two legs from the same game: those results are linked (e.g. a favourite -1.5 and the over), so the hit chance shown here isn't reliable. Books price same-game parlays differently.</p>` : ""}
+        <div class="psum">
+          <div><span class="l">Hits</span><b>${pct(r.P, 1)}</b><span class="small">about 1 in ${(1 / r.P).toFixed(1)}</span></div>
+          <div><span class="l">Pays</span><b>${r.dec ? this.american(r.dec) : "–"}</b><span class="small">${r.dec ? `$10 returns $${(10 * r.dec).toFixed(2)}` : "enter every price"}</span></div>
+          <div><span class="l">Value per $100</span><b class="${r.ev > 0 ? "pos" : r.ev < 0 ? "neg" : ""}">${r.ev == null ? "–" : (r.ev >= 0 ? "+" : "−") + "$" + Math.abs(r.ev * 100).toFixed(2)}</b>
+            ${r.ev == null ? "" : r.ev > 0.03 ? `<span class="badge good">VALUE</span>` : r.ev > -0.05 ? `<span class="badge meh">ROUGHLY FAIR</span>` : `<span class="badge bad">BOOK'S EDGE</span>`}</div>
+        </div>
+        ${legs.some((l) => legVal(l) != null && legVal(l) < 0) && r.ev != null ? `<p class="small">Legs in red cost you value. Dropping them usually improves the ticket more than adding another leg.</p>` : ""}`;
+    },
+    toggle(key) {
+      const i = this.ticket.findIndex((t) => t.key === key);
+      if (i >= 0) this.ticket.splice(i, 1);
+      else {
+        const l = this.legs.find((x) => x.key === key);
+        if (l) this.ticket.push({ ...l, price: l.dec ? this.american(l.dec) : "" });
+      }
+      this.render();
+    },
+    init() {
+      $("#tab-parlay").addEventListener("click", (e) => {
+        const leg = e.target.closest(".pleg"); if (leg) return this.toggle(leg.dataset.key);
+        const cp = e.target.closest(".padd");
+        if (cp) {
+          this.ticket = [];
+          for (const k of cp.dataset.keys.split(",")) { const l = this.legs.find((x) => x.key === k); if (l) this.ticket.push({ ...l, price: l.dec ? this.american(l.dec) : "" }); }
+          this.render();
+          $("#parlayTicket").scrollIntoView({ behavior: "smooth", block: "center" });
+          return;
+        }
+        const del = e.target.closest(".pdel"); if (del) { this.ticket.splice(+del.dataset.i, 1); return this.render(); }
+        if (e.target.id === "pclear") { this.ticket = []; return this.render(); }
+        if (e.target.id === "plog") {
+          const legs = this.ticket.map((t) => ({ ...t, dec: M.toDecimal(t.price) }));
+          const r = this.combine(legs, this.boost / 100);
+          BetLog.add({ date: activeDate, game: legs.map((l) => l.game).join(" / "), market: `Parlay (${legs.length})`,
+                       pick: legs.map((l) => l.label).join(" + "), odds: r.dec.toFixed(2), model: +r.P.toFixed(3) });
+          e.target.textContent = "✓ Logged"; e.target.disabled = true;
+        }
+      });
+      $("#tab-parlay").addEventListener("input", (e) => {
+        if (e.target.classList.contains("pprice")) { this.ticket[+e.target.dataset.i].price = e.target.value; }
+        else if (e.target.id === "pboost") { this.boost = parseFloat(e.target.value) || 0; }
+        else return;
+        const el = e.target, pos = el.selectionStart, id = el.id, idx = el.dataset.i;
+        this.renderTicket();
+        const again = id ? $("#" + id) : $(`.pprice[data-i="${idx}"]`);
+        if (again) { again.focus(); try { again.setSelectionRange(pos, pos); } catch { /* ok */ } }
+      });
+    },
+  };
 
   // ---------- bet log (stored on this device only) ----------
   const BetLog = {
